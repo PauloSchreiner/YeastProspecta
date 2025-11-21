@@ -1,0 +1,11 @@
+
+# Do not add "/" at the end of paths.
+directories:
+  inputs: "data"
+  results: "results"
+  reports: "results/reports"
+  logs: "logs"
+
+
+parameters:
+  trim_cutoff: 0.05

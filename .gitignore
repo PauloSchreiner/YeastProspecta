@@ -1,0 +1,11 @@
+# inputs and outputs
+data/
+results/
+logs/
+resources/
+
+# system files
+.DS_Store
+__pycache__/
+.snakemake/
+.ipynb_checkpoints/

@@ -1,0 +1,29 @@
+import os
+
+configfile: "config.yaml"
+
+
+INPUT_DIR = config["directories"]["inputs"]
+RESULT_DIR = config["directories"]["results"]
+REPORT_DIR = config["directories"]["reports"]
+
+
+files = glob_wildcards(os.path.join(INPUT_DIR, "{sample}_{primer}.ab1"))
+samples, primers = files.sample, files.primer
+
+
+rule all:
+    input:
+        expand(os.path.join(RESULT_DIR, "1_trim", "{sample}_{primer}_trimmed.fastq"), zip, sample=samples, primer=primers)
+
+
+rule trim:
+    input:
+        os.path.join(INPUT_DIR, "{sample}_{primer}.ab1")
+    output:
+        fastq = os.path.join(RESULT_DIR, "1_trim", "{sample}_{primer}_trimmed.fastq"),
+        report = os.path.join(REPORT_DIR, "1_trim", "{sample}_{primer}_trim_report.csv")
+    shell:
+        "python3 scripts/trim.py -i {input} -o {output.fastq} --output_report {output.report} --trim_cutoff 0.05"
+
+
