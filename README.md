@@ -28,8 +28,9 @@ Pipeline intended steps:
 - BLAST full results 
 - BLAST interpretation (processed full results)
 
+---
 
-Results directory structure:
+### Results directory structure:
 ```bash
 results/
 ├── 01_trim/

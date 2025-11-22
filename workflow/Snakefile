@@ -4,20 +4,27 @@ configfile: "config.yaml"
 
 
 INPUT_DIR = config["directories"]["inputs"]
+SUMMARY_DIR = config["directories"]["summary"]
+
 TRIM_DIR = config["directories"]["trim_fastq"]
 TRIM_REPORT_DIR = config["directories"]["trim_reports"]
-SUMMARY_DIR = config["directories"]["summary"]
+
+CONSENSUS_DIR = config["directories"]["consensus_fasta"]
+CONSENSUS_REPORT_DIR = config["directories"]["consensus_reports"]
+
 
 TRIM_CUTOFF = config["parameters"]["trim_cutoff"]
 
 files = glob_wildcards(os.path.join(INPUT_DIR, "{sample}_{primer}.ab1"))
 samples, primers = files.sample, files.primer
 
+unique_samples = list(set(samples)) # Necessary for the consensus rule
 
 rule all:
     input:
         expand(os.path.join(TRIM_DIR, "{sample}_{primer}_trimmed.fastq"), zip, sample=samples, primer=primers),
-        os.path.join(SUMMARY_DIR, "trim_metrics.tsv")
+        os.path.join(SUMMARY_DIR, "trim_metrics.tsv"),
+        expand(os.path.join(CONSENSUS_DIR, "{sample}_consensus.fasta"), sample=unique_samples)
 
 
 rule trim:
@@ -34,7 +41,7 @@ rule trim:
 
 rule trim_aggregate:
     input:
-        reports = expand(os.path.join(TRIM_REPORT_DIR, "1_trim", "{sample}_{primer}_trim_report.tsv"), 
+        reports = expand(os.path.join(TRIM_REPORT_DIR, "{sample}_{primer}_trim_report.tsv"), 
                zip, sample=samples, primer=primers)
     output:
         summary = os.path.join(SUMMARY_DIR, "trim_metrics.tsv")
@@ -44,3 +51,21 @@ rule trim_aggregate:
         final_df = pd.concat(dfs, ignore_index=True)
         final_df.to_csv(output.summary, sep='\t', index=False)
 
+
+rule consensus:
+    input:
+        F_read = os.path.join(TRIM_DIR, "{sample}_F_trimmed.fastq"),
+        R_read = os.path.join(TRIM_DIR, "{sample}_R_trimmed.fastq")
+    output:
+        fasta = os.path.join(CONSENSUS_DIR, "{sample}_consensus.fasta"),
+        report = os.path.join(CONSENSUS_REPORT_DIR, "{sample}_consensus_report.txt")
+    shell:
+        "merger -asequence {input.F_read} \
+        -bsequence {input.R_read} \
+        -sreverse2 \
+        -outseq {output.fasta} \
+        -outfile {output.report}"
+
+
+rule consensus_aggregate:
+    pass
