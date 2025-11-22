@@ -2,25 +2,28 @@
 
 Pipeline intended steps:
 ### 1. Trim
-Input: 
+**Input**: 
 - raw .ab1 files
-Output: 
+
+**Output**: 
 - trimmed reads (fastq)
 - trim reports per read (csv)
 - an aggregated trim report (csv)
 
 ### 2. Consensus
-Input:
+**Input**:
 - trimmed reads (fastq)
-Output: 
+
+**Output**: 
 - consensus sequence ()
 - consensus report per read ()
 - consensus metrics summary (csv)
 
 ### 3. BLAST
-Input:
+**Input**:
 - consensus sequence
-Output:
+
+**Output**:
 - BLAST results per read (use XML instead of tabular)
 - BLAST full results 
 - BLAST interpretation (processed full results)
