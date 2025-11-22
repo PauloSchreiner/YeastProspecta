@@ -1,7 +1,7 @@
 # YeastProspecta
 
 Pipeline intended steps:
-### Trim
+### 1. Trim
 Input: 
 - raw .ab1 files
 Output: 
@@ -9,7 +9,7 @@ Output:
 - trim reports per read (csv)
 - an aggregated trim report (csv)
 
-### Consensus
+### 2. Consensus
 Input:
 - trimmed reads (fastq)
 Output: 
@@ -17,7 +17,7 @@ Output:
 - consensus report per read ()
 - consensus metrics summary (csv)
 
-### BLAST
+### 3. BLAST
 Input:
 - consensus sequence
 Output:
