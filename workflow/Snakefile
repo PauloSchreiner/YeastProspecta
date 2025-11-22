@@ -69,3 +69,5 @@ rule consensus:
 
 rule consensus_aggregate:
     pass
+    # Goal: xtract data from all consensus reports and put it into a .tsv file. 
+    # Maybe I could write a script that extract this data from a single file, and integrate it to snakemake using script:
