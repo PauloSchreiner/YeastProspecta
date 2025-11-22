@@ -49,7 +49,7 @@ def generate_trim_report(pre_trim:SeqRecord,
                         sample_name:str
                         ) -> None:
     """
-    Calculates quality metrics for pre and post trim and writes them to a CSV file.
+    Calculates quality metrics for pre and post trim and writes them to a TSV file.
     """
 
     # Protects from ZeroDivisionError
@@ -61,7 +61,7 @@ def generate_trim_report(pre_trim:SeqRecord,
     report_dict = {
         "sample": sample_name,
 
-        "removed_bp": len(pre_trim) - len(post_trim),
+        "pre_trim_length": len(pre_trim),
         
         "pre_trim_avg_phred_score": round(
             sum(pre_trim.letter_annotations["phred_quality"]) / len(pre_trim), 3
@@ -70,6 +70,10 @@ def generate_trim_report(pre_trim:SeqRecord,
         "pre_trim_q20_count": sum(
             q > 20 for q in pre_trim.letter_annotations["phred_quality"]
         ),
+        
+        "removed_bp": len(pre_trim) - len(post_trim),
+
+        "post_trim_length": len(post_trim),
 
         "post_trim_avg_phred_score": post_avg,
         
@@ -78,8 +82,8 @@ def generate_trim_report(pre_trim:SeqRecord,
         )
     }
 
-    with open(report_path, "w", newline="") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=report_dict.keys())
+    with open(report_path, "w", newline="") as tsvfile:
+        writer = csv.DictWriter(tsvfile, fieldnames=report_dict.keys(), delimiter="\t")
         writer.writeheader()
         writer.writerow(report_dict)
     
@@ -88,7 +92,7 @@ def generate_trim_report(pre_trim:SeqRecord,
 def main():
     # Parse arguments for Command-Line integration
     parser = argparse.ArgumentParser(description="Trim one .ab1 file using Mott's algorithm, \
-                                     generating a .fastq trimmed read and a .csv report.")
+                                     generating a .fastq trimmed read and a .tsv report.")
     parser.add_argument("-i", "--input", 
                         required=True,
                         help="The path to the .ab1 file to be trimmed")
@@ -96,7 +100,7 @@ def main():
                         required=True,
                         help="What the generated trimmed file will be named. Must include the extension ('.fastq')")
     parser.add_argument("--output_report", 
-                        help="The filename for the report file. Must include the extension ('.csv')")
+                        help="The filename for the report file. Must include the extension ('.tsv')")
     parser.add_argument("--trim_cutoff",
                         help="The cutoff value used by Mott's algorithm. Standard is 0.05, which corresponds to Q13.")
     args = parser.parse_args()
