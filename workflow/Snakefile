@@ -12,19 +12,22 @@ TRIM_REPORT_DIR = config["directories"]["trim_reports"]
 CONSENSUS_DIR = config["directories"]["consensus_fasta"]
 CONSENSUS_REPORT_DIR = config["directories"]["consensus_reports"]
 
+BLAST_RAW_DIR = config["directories"]["blast_raw"]
 
 TRIM_CUTOFF = config["parameters"]["trim_cutoff"]
 
 files = glob_wildcards(os.path.join(INPUT_DIR, "{sample}_{primer}.ab1"))
 samples, primers = files.sample, files.primer
-
 unique_samples = list(set(samples)) # Necessary for the consensus rule
+
+NCBI_API_KEY = os.environ.get("NCBI_KEY", "") # Checks for exported variable NCBI_KEY, defaults to blank
+
 
 rule all:
     input:
-        expand(os.path.join(TRIM_DIR, "{sample}_{primer}_trimmed.fastq"), zip, sample=samples, primer=primers),
-        os.path.join(SUMMARY_DIR, "trim_metrics.tsv"),
-        expand(os.path.join(CONSENSUS_DIR, "{sample}_consensus.fasta"), sample=unique_samples)
+        blast_raw = expand(os.path.join(BLAST_RAW_DIR, "{sample}_blast.xml"), sample = unique_samples),
+        trim_summary = os.path.join(SUMMARY_DIR, "trim_metrics.tsv"),
+        consensus_summary = os.path.join(SUMMARY_DIR, "consensus_summary.tsv")
 
 
 rule trim:
@@ -36,7 +39,7 @@ rule trim:
     params:
         cutoff = TRIM_CUTOFF
     shell:
-        "python3 scripts/trim.py -i {input} -o {output.fastq} --output_report {output.report} --trim_cutoff {params.cutoff}"
+        "python3 workflow/scripts/trim.py -i {input} -o {output.fastq} --output_report {output.report} --trim_cutoff {params.cutoff}"
 
 
 rule trim_aggregate:
@@ -68,6 +71,36 @@ rule consensus:
 
 
 rule consensus_aggregate:
-    pass
-    # Goal: xtract data from all consensus reports and put it into a .tsv file. 
-    # Maybe I could write a script that extract this data from a single file, and integrate it to snakemake using script:
+    input:
+        reports = expand(os.path.join(CONSENSUS_REPORT_DIR, "{sample}_consensus_report.txt"),
+                        sample = unique_samples)
+    output:
+        summary = os.path.join(SUMMARY_DIR, "consensus_summary.tsv")
+    script:
+        "scripts/consensus_aggregate.py"
+
+
+rule blast:
+    input:
+        fasta = os.path.join(CONSENSUS_DIR, "{sample}_consensus.fasta")
+    output:
+        xml = os.path.join(BLAST_RAW_DIR, "{sample}_blast.xml")
+    resources:
+        ncbi_connection = 1
+    shell:
+        "export NCBI_API_KEY={NCBI_API_KEY}
+        
+        blastn \
+        -db nt \
+        -remote \
+        -query {input.fasta} \
+        -out {output.xml} \
+        -outfmt 5"
+
+
+rule blast_aggregate:
+    input: 
+        xmls = expand(os.path.join(BLAST_RAW_DIR, "{sample}_blast.xml"), sample=unique_samples)
+    output:
+
+    

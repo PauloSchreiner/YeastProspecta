@@ -1,0 +1,10 @@
+cores: 4
+
+# Ensures there won't be paralellism in BLASTn API, 
+# which would result in banning
+resources:
+  - ncbi_connection=4
+
+# UX settings
+keep-going: True
+printshellcmds: True
