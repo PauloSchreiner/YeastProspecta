@@ -39,7 +39,9 @@ rule trim:
     params:
         cutoff = TRIM_CUTOFF
     shell:
-        "python3 workflow/scripts/trim.py -i {input} -o {output.fastq} --output_report {output.report} --trim_cutoff {params.cutoff}"
+        """
+        python3 workflow/scripts/trim.py -i {input} -o {output.fastq} --output_report {output.report} --trim_cutoff {params.cutoff}
+        """
 
 
 rule trim_aggregate:
@@ -63,11 +65,13 @@ rule consensus:
         fasta = os.path.join(CONSENSUS_DIR, "{sample}_consensus.fasta"),
         report = os.path.join(CONSENSUS_REPORT_DIR, "{sample}_consensus_report.txt")
     shell:
-        "merger -asequence {input.F_read} \
+        """
+        merger -asequence {input.F_read} \
         -bsequence {input.R_read} \
         -sreverse2 \
         -outseq {output.fasta} \
-        -outfile {output.report}"
+        -outfile {output.report}
+        """
 
 
 rule consensus_aggregate:
@@ -77,7 +81,9 @@ rule consensus_aggregate:
     output:
         summary = os.path.join(SUMMARY_DIR, "consensus_summary.tsv")
     script:
-        "scripts/consensus_aggregate.py"
+        """
+        scripts/consensus_aggregate.py
+        """
 
 
 rule blast:
@@ -88,19 +94,22 @@ rule blast:
     resources:
         ncbi_connection = 1
     shell:
-        "export NCBI_API_KEY={NCBI_API_KEY}
+        """
+        export NCBI_API_KEY={NCBI_API_KEY}
         
         blastn \
         -db nt \
         -remote \
         -query {input.fasta} \
         -out {output.xml} \
-        -outfmt 5"
+        -outfmt 5
+        """
 
-
+"""
 rule blast_aggregate:
     input: 
         xmls = expand(os.path.join(BLAST_RAW_DIR, "{sample}_blast.xml"), sample=unique_samples)
-    output:
 
-    
+"""
+
+

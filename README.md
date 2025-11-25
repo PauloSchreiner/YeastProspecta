@@ -3,7 +3,10 @@
 ## How to use
 
 1. Quick start:
-- install necessary dependencies
+- install necessary dependencies:
+biopython
+merger
+blast
 - export NCBI API key
   - (how to generate one), (change number of parallel jobs in profile)
 - snakemake command
