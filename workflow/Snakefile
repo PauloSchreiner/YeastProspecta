@@ -25,9 +25,9 @@ NCBI_API_KEY = os.environ.get("NCBI_KEY", "") # Checks for exported variable NCB
 
 rule all:
     input:
-        blast_raw = expand(os.path.join(BLAST_RAW_DIR, "{sample}_blast.xml"), sample = unique_samples),
         trim_summary = os.path.join(SUMMARY_DIR, "trim_metrics.tsv"),
-        consensus_summary = os.path.join(SUMMARY_DIR, "consensus_summary.tsv")
+        consensus_summary = os.path.join(SUMMARY_DIR, "consensus_summary.tsv"),
+        blast_summary = os.path.join(SUMMARY_DIR, "blast_summary.tsv")
 
 
 rule trim:
@@ -81,9 +81,7 @@ rule consensus_aggregate:
     output:
         summary = os.path.join(SUMMARY_DIR, "consensus_summary.tsv")
     script:
-        """
-        scripts/consensus_aggregate.py
-        """
+        "scripts/consensus_aggregate.py"
 
 
 rule blast:
@@ -105,11 +103,13 @@ rule blast:
         -outfmt 5
         """
 
-"""
+
 rule blast_aggregate:
     input: 
         xmls = expand(os.path.join(BLAST_RAW_DIR, "{sample}_blast.xml"), sample=unique_samples)
-
-"""
+    output: 
+        summary = os.path.join(SUMMARY_DIR, "blast_summary.tsv")
+    script:
+        "scripts/blast_aggregate.py"
 
 
