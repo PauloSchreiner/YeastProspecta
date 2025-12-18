@@ -27,7 +27,7 @@ rule all:
     input:
         trim_summary = os.path.join(SUMMARY_DIR, "trim_metrics.tsv"),
         consensus_summary = os.path.join(SUMMARY_DIR, "consensus_summary.tsv"),
-        blast_summary = os.path.join(SUMMARY_DIR, "blast_summary.tsv")
+        blast_summary = os.path.join(SUMMARY_DIR, "final_report.xlsx")
 
 
 rule trim:
@@ -104,12 +104,14 @@ rule blast:
         """
 
 
-rule blast_aggregate:
+rule final_report:
     input: 
-        xmls = expand(os.path.join(BLAST_RAW_DIR, "{sample}_blast.xml"), sample=unique_samples)
+        xmls = expand(os.path.join(BLAST_RAW_DIR, "{sample}_blast.xml"), sample=unique_samples),
+        trim_summary = os.path.join(SUMMARY_DIR, "trim_metrics.tsv"),
+        consensus_summary = os.path.join(SUMMARY_DIR, "consensus_summary.tsv")
     output: 
-        summary = os.path.join(SUMMARY_DIR, "blast_summary.tsv")
+        report = os.path.join(SUMMARY_DIR, "final_report.xlsx")
     script:
-        "scripts/blast_aggregate.py"
+        "scripts/final_report.py"
 
 
