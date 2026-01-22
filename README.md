@@ -1,15 +1,29 @@
 # YeastProspecta
 
-## How to use
+## Overview
 
-1. Quick start:
-- install necessary dependencies:
+YeastProspecta is a Snakemake pipeline for analyzing sanger sequencing data, more specifically pairs of forward and reverse reads in .ab1 format. 
+
+It consists of three major steps:
+1. Trim the reads using Mott's algorithm
+2. Generate the consensus sequence from the pair of reads
+3. Conduct a BLAST search for each sample 
+
+It outputs comprehensive reports for the intermediate and final results. 
+
+
+***This README is still unfinished!***
+
+
+## How to use
+1. install necessary dependencies:
 biopython
 merger
 blast
-- export NCBI API key
+etc
+2. export NCBI API key
   - (how to generate one), (change number of parallel jobs in profile)
-- snakemake command
+3. snakemake command
 
 
 ---
@@ -81,7 +95,7 @@ directories:
   consensus_fasta:   "results/02_consensus/fasta"
   consensus_reports: "results/02_consensus/reports"
   blast_raw: "results/03_blast/raw_hits"
-  summary: "results/summary/"
+  summary: "results/summary"
 
 parameters:
   trim_cutoff: 0.05

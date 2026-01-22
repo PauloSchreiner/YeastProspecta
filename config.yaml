@@ -9,7 +9,7 @@ directories:
   consensus_fasta:   "results/02_consensus/fasta"
   consensus_reports: "results/02_consensus/reports"
   blast_raw: "results/03_blast/raw_hits"
-  summary: "results/summary/"
+  summary: "results/summary"
 
 parameters:
   trim_cutoff: 0.05
