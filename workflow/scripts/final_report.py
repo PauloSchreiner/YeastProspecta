@@ -3,6 +3,8 @@ from Bio import SearchIO
 import re
 import csv
 import os 
+from openpyxl.formatting.rule import CellIsRule
+from openpyxl.styles import PatternFill
 
 def extract_species_from_title(ncbi_title:str) -> str:
     """
@@ -81,7 +83,7 @@ def extract_trim_data(trim_path:str) -> dict:
 def extract_consensus_data(consensus_path:str) -> dict:
     """
     Return:
-        dict or list with:
+        dict with:
         sample, consensus_score, consensus_length
         for each sample
     """
@@ -93,9 +95,12 @@ def extract_consensus_data(consensus_path:str) -> dict:
         for row in reader:
             sample = row["Sample"]
             consensus_length = int(float(row["Length"]))
-            consensus_score = int(float(row["Score"]))
+            try:
+                consensus_score = int(float(row["Score"]))
+            except ValueError:
+                consensus_score = 0
             results[sample] = {"Consensus_length": consensus_length, 
-                               "Consensus_score":consensus_score}
+                               "Consensus_score": consensus_score}
 
     return results
 
@@ -111,7 +116,7 @@ def get_total_hits_per_sample(xml_path_list:list) -> dict:
     results = {}
     
     for xml_file in xml_path_list:
-        sample = os.path.basename(xml_file).rsplit("_", 1)[0] 
+        sample = os.path.basename(xml_file).rsplit("_", 1)[0]
 
         hits_over_99 = 0
 
@@ -159,10 +164,10 @@ def parse_blast_xmls(xml_path_list:list) -> pd.DataFrame:
 
             identity_pct = round((hsp.ident_num / hsp.aln_span) * 100, 3)
 
-            query_coverage = (hsp.query_span / qresult.seq_len) * 100
+            query_coverage = round((hsp.query_span / qresult.seq_len) * 100, 3)
         
             row_dict = {
-                "Sample": sample,
+                "Sample": sample.zfill(3),
                 "Hit #": hit_index,
                 "Accession": hit.accession,
                 "Identity": identity_pct,
@@ -238,7 +243,7 @@ def generate_summary(df_qc:pd.DataFrame, df_blast:pd.DataFrame) -> pd.DataFrame:
             status = "OK"
 
         rows.append({
-            "Sample": sample_name,
+            "Sample": sample_name.zfill(3),
             "Status": status,
             "Top hit": top_species,
             "Identity": top_identity,
@@ -247,6 +252,66 @@ def generate_summary(df_qc:pd.DataFrame, df_blast:pd.DataFrame) -> pd.DataFrame:
     
     return pd.DataFrame(rows)
 
+
+from openpyxl.formatting.rule import CellIsRule
+from openpyxl.styles import PatternFill
+
+def apply_workbook_styling(writer, df_summary, df_blast, df_qc):
+    """
+    Applies all conditional formatting and styling to the entire Excel workbook.
+    """
+    # 1. DEFINE PRETTY HUES
+    colors = {
+        "green":      PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid'), # Status OK / High Score
+        "lime":       PatternFill(start_color='E3EDB5', end_color='E3EDB5', fill_type='solid'), # Good Score
+        "yellow":     PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid'), # Ambiguous / Mid Score
+        "red":        PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid'), # Bad quality / Low Score
+        "purple":     PatternFill(start_color='E4CCFF', end_color='E4CCFF', fill_type='solid'), # No match
+        "light_gray": PatternFill(start_color='F2F2F2', end_color='F2F2F2', fill_type='solid'), # BLAST grouping
+        "white":      PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')  # BLAST grouping
+    }
+
+    # --- SHEET 1: SUMMARY (Status Colors) ---
+    ws_sum = writer.sheets["Summary"]
+    status_range = f"B2:B{len(df_summary) + 1}"
+    
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"OK"'], fill=colors["green"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No match"'], fill=colors["purple"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Ambiguous"'], fill=colors["yellow"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Bad quality"'], fill=colors["red"]))
+
+    # --- SHEET 2: BLAST DETAILS (Alternating Sample Groups) ---
+    ws_blast = writer.sheets["BLAST_Details"]
+    current_fill = colors["white"]
+    last_sample = None
+    
+    for i, sample_id in enumerate(df_blast["Sample"], start=2):
+        if last_sample is not None and sample_id != last_sample:
+            current_fill = colors["light_gray"] if current_fill == colors["white"] else colors["white"]
+        
+        for col in range(1, ws_blast.max_column + 1):
+            ws_blast.cell(row=i, column=col).fill = current_fill
+        last_sample = sample_id
+
+    # --- SHEET 3: QUALITY CONTROL (Consensus Score Rules) ---
+    ws_qc = writer.sheets["Quality_Control"]
+    
+    # Identify the 'Consensus_score' column
+    score_col_letter = None
+    for cell in ws_qc[1]:
+        if cell.value == "Consensus_score":
+            score_col_letter = cell.column_letter
+            break
+    
+    if score_col_letter:
+        qc_range = f"{score_col_letter}2:{score_col_letter}{len(df_qc) + 1}"
+        
+        # Rules must be added from highest to lowest if using 'greaterThan' 
+        # to ensure the first true condition met is the one Excel keeps.
+        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=['2250'], fill=colors["green"]))
+        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=['2000'], fill=colors["lime"]))
+        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=['1750'], fill=colors["yellow"]))
+        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='lessThanOrEqual', formula=['1750'], fill=colors["red"]))
 
 
 def main():
@@ -262,6 +327,10 @@ def main():
 
     df_qc_final = df_trim.join([df_cons, df_blast], how='outer')
     df_qc_final.index.name = "Sample"
+    df_qc_final.index = df_qc_final.index.astype(str).str.zfill(3)
+    df_qc_final.sort_index(inplace=True)
+
+    df_qc_export = df_qc_final.reset_index() # This avoids using a different font
 
     # RAW BLAST SHEET
     df_blast_details_final = parse_blast_xmls(snakemake.input.xmls)
@@ -283,8 +352,10 @@ def main():
         df_blast_details_final.to_excel(writer, sheet_name="BLAST_Details", index=False)
         auto_adjust_columns(writer, "BLAST_Details")
 
-        df_qc_final.to_excel(writer, sheet_name="Quality_Control")
+        df_qc_export.to_excel(writer, sheet_name="Quality_Control", index=False)
         auto_adjust_columns(writer, "Quality_Control")
+
+        apply_workbook_styling(writer, df_summary, df_blast_details_final, df_qc_export)
 
 
 main()
