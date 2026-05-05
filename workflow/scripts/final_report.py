@@ -1,10 +1,104 @@
 import pandas as pd
+import numpy as np
 from Bio import SearchIO
+
 import re
-import csv
+
 import os 
+
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import PatternFill
+
+
+
+#
+# EXTRACTION
+#
+
+def parse_blast_xmls(xml_path_list: list) -> pd.DataFrame:
+    """
+    Lê os arquivos XML do BLAST e retorna um DataFrame 
+    com todos os hits de todas as amostras.
+    """
+    rows = []
+
+    for xml_file in xml_path_list:
+        sample = os.path.basename(xml_file).rsplit("_", 1)[0] 
+        qresult = SearchIO.read(xml_file, "blast-xml")
+
+        for hit_index, hit in enumerate(qresult, start=1):
+            hsp = hit[0] 
+
+            rows.append({
+                "Sample": sample.zfill(3),
+                "Hit #": hit_index,
+                "Accession": hit.accession,
+                "Identity": round((hsp.ident_num / hsp.aln_span) * 100, 3),
+                "Coverage": round((hsp.query_span / qresult.seq_len) * 100, 3),
+                "E-value": hsp.evalue,
+                "Title": hit.description
+            })
+
+    return pd.DataFrame(rows)
+
+
+
+def extract_trim_data(trim_path: str) -> pd.DataFrame:
+    """
+    Lê o CSV de trimming, passa as reads F e R para colunas
+    e retorna um DataFrame indexado pela amostra.
+    """
+    # 1. Lê o arquivo de uma vez (sep='\t' indica que é separado por Tab)
+    df = pd.read_csv(trim_path, sep="\t")
+    
+    # 2. Divide a coluna 'sample' (ex: "1_F") em duas novas colunas
+    # O expand=True faz com que o split crie colunas reais no DataFrame.
+    df[['Sample_ID', 'Direction']] = df['sample'].str.rsplit('_', n=1, expand=True)
+    
+    # 3. Aplica o zfill(3) para padronizar o nome (ex: "1" vira "001")
+    df['Sample_ID'] = df['Sample_ID'].astype(str).str.zfill(3)
+    
+    # 4. Transforma as linhas F e R em colunas
+    df_pivot = df.pivot(index='Sample_ID', columns='Direction', values='post_trim_length')
+    
+    # 5. Renomeia as colunas para o padrão desejado
+    df_pivot.rename(columns={'F': 'F_len', 'R': 'R_len'}, inplace=True)
+    
+    # Limpa o nome do eixo das colunas (estética) e retorna
+    df_pivot.columns.name = None 
+    return df_pivot
+
+
+def extract_consensus_data(consensus_path: str) -> pd.DataFrame:
+    """
+    Lê o CSV de consenso, padroniza as amostras e trata scores vazios/inválidos.
+    """
+    df = pd.read_csv(consensus_path, sep="\t")
+    
+    # 1. Renomeia as colunas para o nosso padrão
+    df.rename(columns={
+        'Sample': 'Sample_ID', 
+        'Length': 'Consensus_len', 
+        'Score': 'Consensus_score'
+    }, inplace=True)
+    
+    # 2. Padroniza o nome da amostra
+    df['Sample_ID'] = df['Sample_ID'].astype(str).str.zfill(3)
+    
+    # 3. Trata a coluna Score (o equivalente ao try/except do seu código antigo)
+    df['Consensus_score'] = pd.to_numeric(df['Consensus_score'], errors='coerce').fillna(0).astype(int)
+    
+    # 4. Define a Amostra como o Índice (linha) da tabela
+    df.set_index('Sample_ID', inplace=True)
+    
+    return df
+
+
+
+#
+# PROCESSING
+#
+
 
 def extract_species_from_title(ncbi_title:str) -> str:
     """
@@ -23,7 +117,126 @@ def extract_species_from_title(ncbi_title:str) -> str:
         return ncbi_title
 
 
-def auto_adjust_columns(writer, sheet_name):
+def is_type(ncbi_title:str) -> bool:
+    """
+    Given an NCBI title, checks if it is the type strain
+    """
+    return ("type" in ncbi_title.lower())
+
+
+
+def build_qc_df(df_trim: pd.DataFrame, df_cons: pd.DataFrame, df_blast: pd.DataFrame) -> pd.DataFrame:
+    """
+    Une os dados de Trimming, Consenso e calcula os hits >99% a partir do BLAST.
+    Retorna o DataFrame consolidado de Quality Control pronto para exportação.
+    """
+    # 1. Une Trim e Consenso (Outer join garante que não perdemos amostras isoladas)
+    df_qc = df_trim.join(df_cons, how='outer')
+    
+    # 2. Calcula quantos hits têm mais de 99% de identidade (Vetorizado e rápido)
+    hits_over_99 = df_blast[df_blast['Identity'] > 99.0].groupby('Sample').size()
+    
+    # Dá um nome para essa nova série para facilitar o join
+    hits_over_99.name = 'Hits_>99_id_pct' 
+    
+    # 3. Adiciona a contagem ao DataFrame de QC
+    df_qc = df_qc.join(hits_over_99, how='outer')
+    
+    # 4. Tratamento de NaNs e Tipagem de Dados (Evitando a "maldição do Float")
+    # O tipo 'Int64' (com I maiúsculo) do Pandas aceita valores nulos (NaN) sem virar decimal.
+    colunas_numericas = ['F_len', 'R_len', 'Consensus_len', 'Consensus_score', 'Hits_>99_id_pct']
+    
+    for col in colunas_numericas:
+        if col in df_qc.columns:
+            # Preenche NaNs com 0 e força o tipo para inteiro seguro
+            df_qc[col] = df_qc[col].fillna(0).astype('Int64')
+            
+    # Remove a nomenclatura extra do índice e organiza por ordem alfabética
+    df_qc.index.name = "Sample"
+    df_qc.sort_index(inplace=True)
+            
+    return df_qc
+
+
+
+def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame) -> pd.DataFrame:
+    """
+    Gera o relatório resumo cruzando dados de QC e os Top Hits do BLAST.
+    Totalmente vetorizado para máxima performance.
+    """
+    
+    # 1. Criação das Máscaras Booleanas
+    is_type_mask = df_blast["Title"].apply(is_type)
+    is_above_99_id_mask = df_blast["Identity"] > 98.90
+    
+    # Aplica ambas as condições de uma vez só usando o '&'
+    df_type = df_blast[is_type_mask & is_above_99_id_mask].copy()
+
+
+    df_type['Species'] = df_type['Title'].apply(extract_species_from_title)
+    df_type['Species'] = df_type['Species'].str.replace(r'[\[\]]', '', regex=True)
+    
+    # 2. Ordena por Amostra e Identidade (Garante que o melhor hit esteja no topo)
+    df_type.sort_values(by=['Sample', 'Identity'], ascending=[True, False], inplace=True)
+    
+    # Ao invés de iterar, mandamos o Pandas apagar as duplicatas, mantendo só a PRIMEIRA linha de cada amostra
+    df_top = df_type.drop_duplicates(subset=['Sample'], keep='first').copy()
+    df_top = df_top[['Sample', 'Species', 'Identity']].rename(columns={'Species': 'Top hit'})
+    
+    # Mantém apenas o melhor hit de CADA espécie por amostra
+    df_unique_species = df_type.drop_duplicates(subset=['Sample', 'Species'], keep='first').copy()
+    
+    # Cria a string formatada "Espécie (99.0%)" para todo mundo de uma vez
+    df_unique_species['Formatted'] = df_unique_species['Species'] + " (" + df_unique_species['Identity'].astype(str) + "%)"
+    
+    # Agrupa por amostra e junta as strings separadas por "; ", pulando a primeira linha (que é o Top Hit)
+    df_other = df_unique_species.groupby('Sample').apply(
+        lambda x: "; ".join(x['Formatted'].iloc[1:])
+    ).reset_index(name='Other possible species')
+    
+    # --- UNINDO TUDO ---
+    # Pega os dados básicos do QC
+    df_final = df_qc.reset_index()[['Sample', 'Consensus_score', 'Hits_>99_id_pct']].copy()
+    
+    # Mescla (Left Join) os Top Hits e as Outras Espécies
+    df_final = df_final.merge(df_top, on='Sample', how='left')
+    df_final = df_final.merge(df_other, on='Sample', how='left')
+    
+    # Preenche vazios (Para amostras que não tiveram NENHUM match com Type Strain)
+    df_final['Top hit'] = df_final['Top hit'].fillna("None")
+    df_final['Identity'] = df_final['Identity'].fillna(0)
+    df_final['Other possible species'] = df_final['Other possible species'].fillna("")
+    
+    # --- REGRAS DE NEGÓCIO (O STATUS) ---
+    # np.select avalia múltiplas condições de uma vez só!
+    condicoes = [
+        df_final['Consensus_score'] < 2000,                                 # Regra 1
+        df_final['Other possible species'] != "",                           # Regra 2
+        (df_final['Hits_>99_id_pct'] == 0) & (df_final['Identity'] < 99)    # Regra 3
+    ]
+    
+    resultados = [
+        "Bad quality",
+        "Ambiguous",
+        "No match"
+    ]
+    
+    # Se bater na Regra 1, aplica "Bad quality". Se não bater na 1 mas bater na 2, "Ambiguous", etc.
+    df_final['Status'] = np.select(condicoes, resultados, default="OK")
+    
+    # Organiza a ordem das colunas e retorna
+    colunas_finais = ["Sample", "Status", "Top hit", "Identity", "Other possible species"]
+    
+    return df_final[colunas_finais]
+
+
+
+#
+# PRESENTING
+#
+
+
+def auto_adjust_columns(writer: pd.ExcelWriter, sheet_name: str):
     """
     Adjusts the width of all columns in the specified Excel sheet 
     to fit the content.
@@ -40,235 +253,24 @@ def auto_adjust_columns(writer, sheet_name):
             except:
                 pass
         
-        # Set width to max_length + padding (e.g., 2)
-        # We cap it at 60 characters so really long descriptions don't break the UI
+        # Capped at 60 characters so really long descriptions don't break the UI
         adjusted_width = min(max_length + 2, 60)
         worksheet.column_dimensions[column_letter].width = adjusted_width
 
 
-def extract_trim_data(trim_path:str) -> dict:
-    """
-    Return:
-        dict or list with:
-        sample, Post-trim length of F read, Post-trim length of R read
-        for each sample
-    """
-    results = {}
-
-    with open(trim_path, mode="r") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-
-        for row in reader:
-            raw_sample_name = row['sample']
-            length = int(float(row['post_trim_length']))
-            
-            if "_" not in raw_sample_name:
-                print(f"Warning: Unexpected sample name format: {raw_sample_name}")
-                continue
-
-            sample_id, direction = raw_sample_name.rsplit('_', 1)
-            
-            # Initialize sample entry if it has not been iterated over yet
-            if sample_id not in results:
-                results[sample_id] = {"F_len":0, "R_len":0}
-
-            if direction == "F":
-                results[sample_id]["F_len"] = length
-            elif direction == "R":
-                results[sample_id]["R_len"] = length
-    
-    return results
-
-
-def extract_consensus_data(consensus_path:str) -> dict:
-    """
-    Return:
-        dict with:
-        sample, consensus_score, consensus_length
-        for each sample
-    """
-    results = {}
-
-    with open(consensus_path, mode="r") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-
-        for row in reader:
-            sample = row["Sample"]
-            consensus_length = int(float(row["Length"]))
-            try:
-                consensus_score = int(float(row["Score"]))
-            except ValueError:
-                consensus_score = 0
-            results[sample] = {"Consensus_length": consensus_length, 
-                               "Consensus_score": consensus_score}
-
-    return results
-
-
-def get_total_hits_per_sample(xml_path_list:list) -> dict:
-    """
-    Input: snakemake.input.xmls
-    Return:
-        dict or list with
-        sample, Total number of >99% identity hits
-        per sample
-    """
-    results = {}
-    
-    for xml_file in xml_path_list:
-        sample = os.path.basename(xml_file).rsplit("_", 1)[0]
-
-        hits_over_99 = 0
-
-        qresult = SearchIO.read(xml_file, "blast-xml")
-
-        for hit in qresult:
-
-            hsp = hit[0]
-
-            identity_pct = (hsp.ident_num / hsp.aln_span) * 100
-            if identity_pct > 99.0:
-                hits_over_99 += 1
-        
-        results[sample] = {"Hits_>99_id_pct": hits_over_99}
-        
-    return results
-
-
-def parse_blast_xmls(xml_path_list:list) -> pd.DataFrame:
-    """
-    Raw BLAST Sheet (for each of the top 10 hits):
-    - Sample Name
-    - Hit #
-    - Title
-    - Accession
-    - Identity
-    - Coverage
-    - E-value
-    """
-    rows = []
-
-    for xml_file in xml_path_list:
-        sample = os.path.basename(xml_file).rsplit("_", 1)[0] 
-
-        qresult = SearchIO.read(xml_file, "blast-xml")
-
-        hit_index = 0 
-        for hit in qresult:
-            # Limit to only 10 hits 
-            hit_index += 1
-            if hit_index > 10:
-                break
-
-            hsp = hit[0]
-
-            identity_pct = round((hsp.ident_num / hsp.aln_span) * 100, 3)
-
-            query_coverage = round((hsp.query_span / qresult.seq_len) * 100, 3)
-        
-            row_dict = {
-                "Sample": sample.zfill(3),
-                "Hit #": hit_index,
-                "Accession": hit.accession,
-                "Identity": identity_pct,
-                "Coverage": query_coverage,
-                "E-value":hsp.evalue,
-                "Title": hit.description
-            }
-
-            rows.append(row_dict)
-
-    return pd.DataFrame(rows)
-                
-
-def generate_summary(df_qc:pd.DataFrame, df_blast:pd.DataFrame) -> pd.DataFrame:
-    """
-    Determine status based on:
-    Consensus_score,
-    Title of each hit,
-    """
-    
-    rows = []
-
-    for sample_name in df_qc.index:
-
-        group = df_blast[df_blast["Sample"] == sample_name] 
-        group = group.sort_values("Identity", ascending=False).copy()
-
-        if group.empty:
-            top_species = "None"
-            top_identity = 0
-            other_species = ""
-        else: 
-            top_hit_row = group.iloc[0]
-            top_identity = round(top_hit_row["Identity"], 3)
-            
-            top_species = extract_species_from_title(top_hit_row["Title"])
-            
-            # --- START OF OTHER SPECIES LOGIC --- #
-            clean_top = top_species.replace('[', '').replace(']', '')
-            seen_species = {clean_top}
-            
-            other_species_list = []
-
-            for index, row in group.iterrows():
-                
-                current_species = extract_species_from_title(row["Title"])
-                clean_current = current_species.replace('[', '').replace(']', '')
-                
-                if clean_current not in seen_species:
-                    current_identity = round(row["Identity"], 3)
-                    
-                    formatted_string = f"{current_species} ({current_identity}%)"
-                    other_species_list.append(formatted_string)
-                    
-                    seen_species.add(clean_current)
-            
-            other_species = "; ".join(other_species_list)
-            # --- END OF OTHER SPECIES LOGIC --- #
-
-        consensus_score = df_qc.loc[sample_name, "Consensus_score"]
-        status = "Pending"
-
-        if consensus_score < 2000:
-            status = "Bad quality"
-        
-        elif other_species:
-            status = "Ambiguous"
-
-        elif df_qc.loc[sample_name, "Hits_>99_id_pct"] == 0 and top_identity < 99:
-            status = "No match"
-
-        else:
-            status = "OK"
-
-        rows.append({
-            "Sample": sample_name.zfill(3),
-            "Status": status,
-            "Top hit": top_species,
-            "Identity": top_identity,
-            "Other possible species": other_species
-        })
-    
-    return pd.DataFrame(rows)
-
-
-from openpyxl.formatting.rule import CellIsRule
-from openpyxl.styles import PatternFill
-
-def apply_workbook_styling(writer, df_summary, df_blast, df_qc):
+def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame):
     """
     Applies all conditional formatting and styling to the entire Excel workbook.
     """
     # 1. DEFINE PRETTY HUES
     colors = {
-        "green":      PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid'), # Status OK / High Score
-        "lime":       PatternFill(start_color='E3EDB5', end_color='E3EDB5', fill_type='solid'), # Good Score
-        "yellow":     PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid'), # Ambiguous / Mid Score
-        "red":        PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid'), # Bad quality / Low Score
-        "purple":     PatternFill(start_color='E4CCFF', end_color='E4CCFF', fill_type='solid'), # No match
-        "light_gray": PatternFill(start_color='F2F2F2', end_color='F2F2F2', fill_type='solid'), # BLAST grouping
-        "white":      PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')  # BLAST grouping
+        "green":      PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid'),
+        "lime":       PatternFill(start_color='E3EDB5', end_color='E3EDB5', fill_type='solid'),
+        "yellow":     PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid'),
+        "red":        PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid'),
+        "purple":     PatternFill(start_color='E4CCFF', end_color='E4CCFF', fill_type='solid'),
+        "light_gray": PatternFill(start_color='F2F2F2', end_color='F2F2F2', fill_type='solid'),
+        "white":      PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')
     }
 
     # --- SHEET 1: SUMMARY (Status Colors) ---
@@ -296,7 +298,7 @@ def apply_workbook_styling(writer, df_summary, df_blast, df_qc):
     # --- SHEET 3: QUALITY CONTROL (Consensus Score Rules) ---
     ws_qc = writer.sheets["Quality_Control"]
     
-    # Identify the 'Consensus_score' column
+    # Identify the 'Consensus_score' column dynamically
     score_col_letter = None
     for cell in ws_qc[1]:
         if cell.value == "Consensus_score":
@@ -305,57 +307,69 @@ def apply_workbook_styling(writer, df_summary, df_blast, df_qc):
     
     if score_col_letter:
         qc_range = f"{score_col_letter}2:{score_col_letter}{len(df_qc) + 1}"
-        
-        # Rules must be added from highest to lowest if using 'greaterThan' 
-        # to ensure the first true condition met is the one Excel keeps.
         ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=['2250'], fill=colors["green"]))
         ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=['2000'], fill=colors["lime"]))
         ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=['1750'], fill=colors["yellow"]))
         ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='lessThanOrEqual', formula=['1750'], fill=colors["red"]))
 
 
-def main():
+def export_to_excel(df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame, output_file: str):
+    """
+    Orquestra a exportação dos DataFrames para as abas do Excel,
+    aplica os filtros visuais (Top 20 hits) e aciona as formatações.
+    """
+    # 1. Aplica o filtro de apresentação: Apenas Top 20 hits na aba BLAST
+    df_blast_export = df_blast[df_blast['Hit #'] <= 20].copy()
 
-    # QC SHEET
-    trim_dict = extract_trim_data(snakemake.input.trim_summary)
-    consensus_dict = extract_consensus_data(snakemake.input.consensus_summary)
-    blast_qc_dict = get_total_hits_per_sample(snakemake.input.xmls)
-
-    df_trim = pd.DataFrame.from_dict(trim_dict, orient='index')
-    df_cons = pd.DataFrame.from_dict(consensus_dict, orient='index')
-    df_blast = pd.DataFrame.from_dict(blast_qc_dict, orient='index')
-
-    df_qc_final = df_trim.join([df_cons, df_blast], how='outer')
-    df_qc_final.index.name = "Sample"
-    df_qc_final.index = df_qc_final.index.astype(str).str.zfill(3)
-    df_qc_final.sort_index(inplace=True)
-
-    df_qc_export = df_qc_final.reset_index() # This avoids using a different font
-
-    # RAW BLAST SHEET
-    df_blast_details_final = parse_blast_xmls(snakemake.input.xmls)
-
-    # SUMMARY SHEET
-    df_summary = generate_summary(df_qc_final, df_blast_details_final)
-
-    # SORT SHEETS
-    df_qc_final.sort_index(inplace=True)
-    df_blast_details_final.sort_values(by=["Sample", "Hit #"], inplace=True)
+    # 2. Ordenação final estética
     df_summary.sort_values(by="Sample", inplace=True)
+    df_blast_export.sort_values(by=["Sample", "Hit #"], inplace=True)
+    
+    # Prepara o df_qc transformando o índice 'Sample' em uma coluna real para o Excel
+    df_qc_export = df_qc.reset_index() 
 
-    # WRITE SHEETS TO EXCEL
-    output_file = snakemake.output.report
+    # 3. Escrita no arquivo
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+        
+        # Escreve os DataFrames
         df_summary.to_excel(writer, sheet_name="Summary", index=False)
-        auto_adjust_columns(writer, "Summary")
-
-        df_blast_details_final.to_excel(writer, sheet_name="BLAST_Details", index=False)
-        auto_adjust_columns(writer, "BLAST_Details")
-
+        df_blast_export.to_excel(writer, sheet_name="BLAST_Details", index=False)
         df_qc_export.to_excel(writer, sheet_name="Quality_Control", index=False)
+
+        # --- A MÁGICA DO CONGELAMENTO DE PAINÉIS ---
+        # Itera sobre todas as abas criadas e congela a primeira linha
+        for sheet_name in writer.sheets:
+            writer.sheets[sheet_name].freeze_panes = "A2"
+        # -------------------------------------------
+
+        # Ajusta larguras das colunas
+        auto_adjust_columns(writer, "Summary")
+        auto_adjust_columns(writer, "BLAST_Details")
         auto_adjust_columns(writer, "Quality_Control")
 
-        apply_workbook_styling(writer, df_summary, df_blast_details_final, df_qc_export)
+        # Aplica cores baseadas no df_blast já filtrado
+        apply_workbook_styling(writer, df_summary, df_blast_export, df_qc_export)
+
+#
+# MAIN LOGIC
+#
+
+def main():
+    # --- 1. EXTRAÇÃO ---
+    df_trim = extract_trim_data(snakemake.input.trim_summary)
+    df_cons = extract_consensus_data(snakemake.input.consensus_summary)
+    df_blast_completo = parse_blast_xmls(snakemake.input.xmls)
+    
+    # --- 2. PROCESSAMENTO ---
+    df_qc = build_qc_df(df_trim, df_cons, df_blast_completo)
+    df_summary = build_summary_df(df_qc, df_blast_completo)
+    
+    # --- 3. APRESENTAÇÃO / EXPORTAÇÃO ---
+    export_to_excel(df_summary, df_blast_completo, df_qc, snakemake.output.report)
 
 
-main()
+
+if __name__ == "__main__":
+    main()
+
+
