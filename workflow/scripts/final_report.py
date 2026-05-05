@@ -3,7 +3,6 @@ import numpy as np
 from Bio import SearchIO
 
 import re
-
 import os 
 
 from openpyxl.formatting.rule import CellIsRule
@@ -17,7 +16,7 @@ from openpyxl.styles import PatternFill
 
 def parse_blast_xmls(xml_path_list: list) -> pd.DataFrame:
     """
-    Reads BLAST XML files and returns a consolidated DataFrame 
+    Reads BLAST XML files and returns a DataFrame 
     containing all hits across all samples.
     """
     rows = []
