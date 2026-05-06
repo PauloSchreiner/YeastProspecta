@@ -159,15 +159,15 @@ This comprehensive report contains three sheets:
 The taxonomic identification status is determined dynamically based on the parameters set in your `config.yaml`. The pipeline evaluates each sample top-to-bottom using the following logical hierarchy:
 
 1. **Rule 1 (Quality Check):** Is the `Consensus_score` strictly lower than `good_consensus_score`? 
-   * *If Yes ->* Flags as **Bad quality**.
+   * *If Yes ->* Flags as **🟥 Bad quality**.
 2. **Rule 2 (Ambiguity Check):** Are there multiple valid type strain species matching the criteria? 
-   * *If Yes ->* Flags as **Ambiguous**.
+   * *If Yes ->* Flags as **🟨 Ambiguous**.
 3. **Rule 3 (Identity Check):** Are there no hits at all above the `identity_threshold`? 
-   * *If Yes ->* Flags as **No hit above threshold**.
+   * *If Yes ->* Flags as **🟪 No hit above threshold**.
 4. **Rule 4 (Type Strain Check):** Are there hits above the identity threshold but none are a recognized "type material"? 
-   * *If Yes ->* Flags as **No hit with type**.
+   * *If Yes ->* Flags as **🟦 No hit with type**.
 5. **Rule 5 (OK):** If none of the above rules are triggered, the sample has a straight-forward taxonomic identification.
-   * *Result ->* Flags as **OK**.
+   * *Result ->* Flags as **🟩 OK**.
 
 These rules can be modified by altering the following code, found at line 227 of the `final_report.py` script:
 
