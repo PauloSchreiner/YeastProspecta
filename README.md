@@ -192,4 +192,4 @@ conditions = [
 ```
 ---
 
-**Maintained by:** *Paulo Schreiner / Laboratório de Biologia Computacional e Molecular (LBCM)* **Contact:** *paulorangelschreiner@gmail.com*
+**Created and maintained by:** *Paulo Schreiner / Prof. Dr. Diego Bonatto - Laboratório de Biologia Computacional e Molecular (LBCM) - UFRGS* **Contact:** *paulorangelschreiner@gmail.com*
