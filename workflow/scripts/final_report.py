@@ -185,7 +185,12 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame) -> pd.DataFram
     # Instead of looping, we drop duplicates keeping only the FIRST row of each sample. 
     # This instantly isolates our Top Hit.
     df_top = df_type.drop_duplicates(subset=['Sample'], keep='first').copy()
-    df_top = df_top[['Sample', 'Species', 'Identity']].rename(columns={'Species': 'Top hit'})
+    df_top = df_top[['Sample', 'Species', 'Identity']].rename(
+        columns={'Species': 'Top hit (type strain)', 'Identity': 'Identity (type strain)'}
+    )
+
+    # Getting highest identity overall
+    df_highest_id = df_blast.groupby("Sample")["Identity"].max().rename("Highest identity overall")
     
     # Keep only the best hit of EACH unique species per sample (to list other potential options)
     df_unique_species = df_type.drop_duplicates(subset=['Sample', 'Species'], keep='first').copy()
@@ -205,31 +210,35 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame) -> pd.DataFram
     # Merge (Left Join) the Top Hits and the Other Species back into our baseline
     df_final = df_final.merge(df_top, on='Sample', how='left')
     df_final = df_final.merge(df_other, on='Sample', how='left')
+    df_final = df_final.merge(df_highest_id, on='Sample', how='left')
     
     # Fill blanks for samples that had NO hits passing the > 98.90 or Type Strain filters
-    df_final['Top hit'] = df_final['Top hit'].fillna("None")
-    df_final['Identity'] = df_final['Identity'].fillna(0)
+    df_final['Top hit (type strain)'] = df_final['Top hit (type strain)'].fillna("None")
+    df_final['Identity (type strain)'] = df_final['Identity (type strain)'].fillna(0)
+    df_final['Highest identity overall'] = df_final['Highest identity overall'].fillna(0) 
     df_final['Other possible species'] = df_final['Other possible species'].fillna("")
     
     # --- BUSINESS RULES (STATUS EVALUATION) ---
-    # np.select evaluates multiple conditions simultaneously, replacing slow if/elif/else loops!
+    # np.select evaluates multiple conditions simultaneously, replacing if/elif/else loops!
     condicoes = [
         df_final['Consensus_score'] < 2000,                                 # Rule 1: Poor sequence quality
         df_final['Other possible species'] != "",                           # Rule 2: More than one valid species found
-        (df_final['Hits_>99_id_pct'] == 0) & (df_final['Identity'] < 99)    # Rule 3: No excellent match found
+        df_final['Highest identity overall'] < 99,                          # Rule 3: No good hit found at all
+        df_final['Top hit (type strain)'] == "None"                         # Rule 4: No type found 
     ]
     
     resultados = [
         "Bad quality",
         "Ambiguous",
-        "No match"
+        "No hit above 99",
+        "No hit with type"
     ]
     
     # Applies the conditions in order. If none match, defaults to "OK".
     df_final['Status'] = np.select(condicoes, resultados, default="OK")
     
     # Reorder the final columns and return
-    colunas_finais = ["Sample", "Status", "Top hit", "Identity", "Other possible species"]
+    colunas_finais = ["Sample", "Status", "Top hit (type strain)", "Identity (type strain)", "Highest identity overall", "Other possible species"]
     
     return df_final[colunas_finais]
 
@@ -271,6 +280,7 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
         "green":      PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid'),
         "lime":       PatternFill(start_color='E3EDB5', end_color='E3EDB5', fill_type='solid'),
         "yellow":     PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid'),
+        "blue":       PatternFill(start_color='89CFF0', end_color='89CFF0', fill_type='solid'),        
         "red":        PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid'),
         "purple":     PatternFill(start_color='E4CCFF', end_color='E4CCFF', fill_type='solid'),
         "light_gray": PatternFill(start_color='F2F2F2', end_color='F2F2F2', fill_type='solid'),
@@ -282,9 +292,10 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
     status_range = f"B2:B{len(df_summary) + 1}"
     
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"OK"'], fill=colors["green"]))
-    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No match"'], fill=colors["purple"]))
-    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Ambiguous"'], fill=colors["yellow"]))
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Bad quality"'], fill=colors["red"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Ambiguous"'], fill=colors["yellow"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No hit with type"'], fill=colors["blue"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No hit above 99"'], fill=colors["purple"]))
 
     # --- SHEET 2: BLAST DETAILS (Alternating Sample Groups) ---
     ws_blast = writer.sheets["BLAST_Details"]
