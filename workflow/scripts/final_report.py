@@ -220,14 +220,14 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame) -> pd.DataFram
     
     # --- BUSINESS RULES (STATUS EVALUATION) ---
     # np.select evaluates multiple conditions simultaneously, replacing if/elif/else loops!
-    condicoes = [
+    conditions = [
         df_final['Consensus_score'] < 2000,                                 # Rule 1: Poor sequence quality
         df_final['Other possible species'] != "",                           # Rule 2: More than one valid species found
         df_final['Highest identity overall'] < 99,                          # Rule 3: No good hit found at all
         df_final['Top hit (type strain)'] == "None"                         # Rule 4: No type found 
     ]
     
-    resultados = [
+    labels = [
         "Bad quality",
         "Ambiguous",
         "No hit above 99",
@@ -235,7 +235,7 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame) -> pd.DataFram
     ]
     
     # Applies the conditions in order. If none match, defaults to "OK".
-    df_final['Status'] = np.select(condicoes, resultados, default="OK")
+    df_final['Status'] = np.select(conditions, labels, default="OK")
     
     # Reorder the final columns and return
     colunas_finais = ["Sample", "Status", "Top hit (type strain)", "Identity (type strain)", "Highest identity overall", "Other possible species"]
