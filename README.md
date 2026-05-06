@@ -10,17 +10,17 @@ The pipeline applies quality control thresholds, assembles consensus sequences, 
 ---
 
 ## 📑 Table of Contents
-1. [Workflow Overview](#-workflow-overview)
-2. [Installation & Dependencies](#-installation--dependencies)
-3. [Input Data Preparation](#-input-data-preparation)
-4. [Configuration & Parameters](#-configuration--parameters)
-5. [Running the Pipeline](#-running-the-pipeline)
-6. [Outputs & Interpretation](#-outputs--interpretation)
-7. [Identification Rules Logic](#-identification-rules-logic)
+1. [Workflow Overview](#workflow-overview)
+2. [Installation & Dependencies](#installation-dependencies)
+3. [Input Data Preparation](#input-data-preparation)
+4. [Configuration & Parameters](#configuration-parameters)
+5. [Running the Pipeline](#running-the-pipeline)
+6. [Outputs & Interpretation](#outputs-interpretation)
+7. [Identification Rules Logic](#identification-rules-logic)
 
 ---
 
-## ⚙️ Workflow Overview
+## <a id="workflow-overview"></a>⚙️ Workflow Overview
 
 The pipeline consists of three major interconnected steps:
 
@@ -30,7 +30,7 @@ The pipeline consists of three major interconnected steps:
 
 ---
 
-## 💻 Installation & Dependencies
+## <a id="installation-dependencies"></a>💻 Installation & Dependencies
 
 YeastProspecta relies on Conda/Mamba for environment management to ensure strict reproducibility. 
 
@@ -52,7 +52,7 @@ conda activate yeastprospecta
 
 ---
 
-## 📂 Input Data Preparation
+## <a id="input-data-preparation"></a>📂 Input Data Preparation
 
 The pipeline expects paired Sanger chromatograms (`.ab1` or `.seq` format) in the input directory.
 
@@ -69,7 +69,7 @@ python scripts/utils/rename_samples.py --dir path/to/your/raw_data --execute
 
 ---
 
-## 🔧 Configuration & Parameters
+## <a id="configuration-parameters"></a>🔧 Configuration & Parameters
 
 All pipeline parameters are controlled via the `config.yaml` file located in the root directory. You do not need to modify any Python or Shell scripts to adapt the pipeline to your specific organism or amplicon size.
 
@@ -110,7 +110,7 @@ resources:
 
 ---
 
-## 🚀 Running the Pipeline
+## <a id="running-the-pipeline"></a>🚀 Running the Pipeline
 
 Once your data is in the `inputs` folder and configured, run the pipeline using the provided safety profile:
 
@@ -126,7 +126,7 @@ snakemake --profile profiles/ncbi_safe --cores [number_of_cpu_cores]
 
 ---
 
-## 📊 Outputs & Interpretation
+## <a id="outputs-interpretation"></a>📊 Outputs & Interpretation
 
 The pipeline generates intermediate files in the `results/` directory. The primary output for researchers is located at:
 
@@ -144,7 +144,7 @@ This comprehensive report contains three sheets:
 
 ---
 
-## 🎛️ Identification Rules Logic
+## <a id="identification-rules-logic"></a>🎛️ Identification Rules Logic
 
 The taxonomic identification status is determined dynamically based on the parameters set in your `config.yaml`. The pipeline evaluates each sample top-to-bottom using the following logical hierarchy:
 
