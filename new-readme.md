@@ -76,12 +76,23 @@ All pipeline parameters are controlled via the `config.yaml` file located in the
 ### `config.yaml`
 ```yaml
 directories:
-  inputs: "data"          # Place your standardized .ab1 files here
-  results: "results"      # Output directory
-  # ... (other directories are automatically managed)
+  inputs: "data"                                      # Where the input .ab1 files must be placed
+  results: "results"                                  # Results root directory
+  trim_fastq:   "results/01_trim/fastq"               # Trimmed sequences (F and R separately)
+  trim_reports: "results/01_trim/reports"             # Details of trimming process
+  consensus_fasta:   "results/02_consensus/fasta"     # Consensus sequences (F and R reads combined)
+  consensus_reports: "results/02_consensus/reports"   # Consensus .txt reports (scores and visual alignment)
+  blast_raw: "results/03_blast/raw_hits"              # BLAST xml files 
+  summary: "results/summary"                          # Final summaries 
 
 parameters:
-  trim_cutoff: 0.05       # Error probability threshold for Mott's trimming algorithm
+  trim_cutoff: 0.05          # Stringency on mott's algorithm for trimming
+  blast_database: "nt"       # NCBI database for BLAST searches
+  identity_threshold: 99.0   # Identity threshold for species identification via D1/D2 
+  good_consensus_score: 2000 # Arbitrary threshold for a "good" consensus score (EMBOSS merger)
+  max_excel_hits: 20         # Max amount of BLAST hits to be included in BLAST_Details tab in final_report.xlsx
+
+
 ```
 
 ### NCBI API Key (Crucial for BLAST)

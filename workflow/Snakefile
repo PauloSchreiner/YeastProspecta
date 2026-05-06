@@ -89,6 +89,8 @@ rule blast:
         fasta = os.path.join(CONSENSUS_DIR, "{sample}_consensus.fasta")
     output:
         xml = os.path.join(BLAST_RAW_DIR, "{sample}_blast.xml")
+    params:
+        blast_db = config["parameters"]["blast_database"]        
     resources:
         ncbi_connection = 1
     shell:
@@ -96,7 +98,7 @@ rule blast:
         export NCBI_API_KEY={NCBI_API_KEY}
         
         blastn \
-        -db nt \
+        -db {params.blast_db} \
         -remote \
         -query {input.fasta} \
         -out {output.xml} \
@@ -111,6 +113,10 @@ rule final_report:
         consensus_summary = os.path.join(SUMMARY_DIR, "consensus_summary.tsv")
     output: 
         report = os.path.join(SUMMARY_DIR, "final_report.xlsx")
+    params:
+        id_thresh = config["parameters"]["identity_threshold"],
+        good_consensus_score = config["parameters"]["good_consensus_score"],
+        max_excel_hits = config["parameters"]["max_excel_hits"]
     script:
         "scripts/final_report.py"
 

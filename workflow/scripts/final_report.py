@@ -125,26 +125,26 @@ def is_type(ncbi_title:str) -> bool:
 
 
 
-def build_qc_df(df_trim: pd.DataFrame, df_cons: pd.DataFrame, df_blast: pd.DataFrame) -> pd.DataFrame:
+def build_qc_df(df_trim: pd.DataFrame, df_cons: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: float) -> pd.DataFrame:
     """
-    Joins Trimming and Consensus data, and calculates the number of hits with >99% identity from the BLAST results.
+    Joins Trimming and Consensus data, and calculates the number of hits above the identity threshold from the BLAST results.
     Returns the consolidated Quality Control DataFrame ready for export.
     """
     # 1. Join Trim and Consensus data. An 'outer' join ensures we don't lose samples that might be missing.
     df_qc = df_trim.join(df_cons, how='outer')
     
-    # 2. Calculate how many hits have > 99% identity (Vectorized and fast)
-    hits_over_99 = df_blast[df_blast['Identity'] > 99.0].groupby('Sample').size()
+    # 2. Calculate how many hits are above id threshold
+    hits_above_thresh = df_blast[df_blast['Identity'] > id_thresh].groupby('Sample').size()
     
     # Name this new Series so it becomes a properly named column after joining
-    hits_over_99.name = 'Hits_>99_id_pct' 
+    hits_above_thresh.name = 'Hits_above_' + str(id_thresh) + '_id'
     
-    # 3. Add the >99% hits count to the main QC DataFrame
-    df_qc = df_qc.join(hits_over_99, how='outer')
+    # 3. Add the hits_above_thresh count to the main QC DataFrame
+    df_qc = df_qc.join(hits_above_thresh, how='outer')
     
     # 4. NaN handling and Data Typing (Avoiding the "Float curse")
     # The Pandas 'Int64' type (capital 'I') allows integers to coexist with NaNs without converting the whole column to decimals.
-    colunas_numericas = ['F_len', 'R_len', 'Consensus_len', 'Consensus_score', 'Hits_>99_id_pct']
+    colunas_numericas = ['F_len', 'R_len', 'Consensus_len', 'Consensus_score', hits_above_thresh.name]
     
     for col in colunas_numericas:
         if col in df_qc.columns:
@@ -159,20 +159,20 @@ def build_qc_df(df_trim: pd.DataFrame, df_cons: pd.DataFrame, df_blast: pd.DataF
 
 
 
-def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame) -> pd.DataFrame:
+def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: float, good_cons_score: int) -> pd.DataFrame:
     """
     Generates the summary report by cross-referencing QC data with the Top Hits from BLAST.
-    Initially filters for Type Strains with > 98.90% Identity.
+    Initially filters for Type Strains with Identity above threshold.
     Fully vectorized for maximum performance.
     """
     
     # 1. Create Boolean Masks to filter the data
     is_type_mask = df_blast["Title"].apply(is_type)
-    is_above_99_id_mask = df_blast["Identity"] > 98.90
+    is_above_thresh_mask = df_blast["Identity"] > id_thresh
     
     # Apply both conditions at once using the bitwise '&'. 
     # We use .copy() to create an independent DataFrame and avoid SettingWithCopyWarnings.
-    df_type = df_blast[is_type_mask & is_above_99_id_mask].copy()
+    df_type = df_blast[is_type_mask & is_above_thresh_mask].copy()
 
 
     # Extract the clean species name and remove brackets
@@ -204,15 +204,19 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame) -> pd.DataFram
     ).reset_index(name='Other possible species')
     
     # --- MERGING EVERYTHING ---
+    
+    # Name has to match the one determined in build_qc_df
+    hits_above_thresh_name = 'Hits_above_' + str(id_thresh) + '_id'
+
     # Get the baseline QC data needed for the final rules
-    df_final = df_qc.reset_index()[['Sample', 'Consensus_score', 'Hits_>99_id_pct']].copy()
+    df_final = df_qc.reset_index()[['Sample', 'Consensus_score', hits_above_thresh_name]].copy()
     
     # Merge (Left Join) the Top Hits and the Other Species back into our baseline
     df_final = df_final.merge(df_top, on='Sample', how='left')
     df_final = df_final.merge(df_other, on='Sample', how='left')
     df_final = df_final.merge(df_highest_id, on='Sample', how='left')
     
-    # Fill blanks for samples that had NO hits passing the > 98.90 or Type Strain filters
+    # Fill blanks for samples that had NO hits passing above threshold or Type Strain filters
     df_final['Top hit (type strain)'] = df_final['Top hit (type strain)'].fillna("None")
     df_final['Identity (type strain)'] = df_final['Identity (type strain)'].fillna(0)
     df_final['Highest identity overall'] = df_final['Highest identity overall'].fillna(0) 
@@ -221,16 +225,16 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame) -> pd.DataFram
     # --- BUSINESS RULES (STATUS EVALUATION) ---
     # np.select evaluates multiple conditions simultaneously, replacing if/elif/else loops!
     conditions = [
-        df_final['Consensus_score'] < 2000,                                 # Rule 1: Poor sequence quality
+        df_final['Consensus_score'] < good_cons_score,                      # Rule 1: Poor sequence quality
         df_final['Other possible species'] != "",                           # Rule 2: More than one valid species found
-        df_final['Highest identity overall'] < 99,                          # Rule 3: No good hit found at all
-        df_final['Top hit (type strain)'] == "None"                         # Rule 4: No type found 
+        df_final['Highest identity overall'] < id_thresh,                   # Rule 3: No hit above threshold
+        df_final['Top hit (type strain)'] == "None"                         # Rule 4: No type found above threshold
     ]
     
     labels = [
         "Bad quality",
         "Ambiguous",
-        "No hit above 99",
+        "No hit above threshold",
         "No hit with type"
     ]
     
@@ -271,7 +275,7 @@ def auto_adjust_columns(writer: pd.ExcelWriter, sheet_name: str):
         worksheet.column_dimensions[column_letter].width = adjusted_width
 
 
-def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame):
+def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame, good_cons_score: int):
     """
     Applies all conditional formatting and styling to the entire Excel workbook.
     """
@@ -295,7 +299,7 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Bad quality"'], fill=colors["red"]))
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Ambiguous"'], fill=colors["yellow"]))
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No hit with type"'], fill=colors["blue"]))
-    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No hit above 99"'], fill=colors["purple"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No hit above threshold"'], fill=colors["purple"]))
 
     # --- SHEET 2: BLAST DETAILS (Alternating Sample Groups) ---
     ws_blast = writer.sheets["BLAST_Details"]
@@ -322,19 +326,19 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
     
     if score_col_letter:
         qc_range = f"{score_col_letter}2:{score_col_letter}{len(df_qc) + 1}"
-        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=['2250'], fill=colors["green"]))
-        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=['2000'], fill=colors["lime"]))
-        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=['1750'], fill=colors["yellow"]))
-        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='lessThanOrEqual', formula=['1750'], fill=colors["red"]))
+        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=[str(good_cons_score * 1.2)], fill=colors["green"]))
+        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=[str(good_cons_score)], fill=colors["lime"]))
+        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=[str(good_cons_score * 0.8)], fill=colors["yellow"]))
+        ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='lessThanOrEqual', formula=[str(good_cons_score * 0.8)], fill=colors["red"]))
 
 
-def export_to_excel(df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame, output_file: str):
+def export_to_excel(df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame, output_file: str, max_excel_hits: int, good_cons_score: int):
     """
     Orchestrates the export of DataFrames to Excel sheets, 
-    applies visual filters (Top 20 hits), and triggers formatting.
+    applies visual filters (Top X hits), and triggers formatting.
     """
-    # 1. Presentation Filter: Keep only the Top 20 hits in the BLAST sheet
-    df_blast_export = df_blast[df_blast['Hit #'] <= 20].copy()
+    # 1. Presentation Filter: Keep only the Top X hits in the BLAST sheet
+    df_blast_export = df_blast[df_blast['Hit #'] <= max_excel_hits].copy()
 
     # 2. Final aesthetic sorting
     df_summary.sort_values(by="Sample", inplace=True)
@@ -363,24 +367,29 @@ def export_to_excel(df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.
         auto_adjust_columns(writer, "Quality_Control")
 
         # Apply conditional formatting based on the already filtered df_blast
-        apply_workbook_styling(writer, df_summary, df_blast_export, df_qc_export)
+        apply_workbook_styling(writer, df_summary, df_blast_export, df_qc_export, good_cons_score)
 
 #
 # MAIN LOGIC
 #
 
 def main():
+    # Get parameters from snakefile
+    id_thresh = float(snakemake.params.id_thresh)
+    max_excel_hits = int(snakemake.params.max_excel_hits)
+    good_consensus_score = int(snakemake.params.good_consensus_score)
+
     # --- 1. EXTRACTION ---
     df_trim = extract_trim_data(snakemake.input.trim_summary)
     df_cons = extract_consensus_data(snakemake.input.consensus_summary)
     df_blast_completo = parse_blast_xmls(snakemake.input.xmls)
     
     # --- 2. PROCESSING ---
-    df_qc = build_qc_df(df_trim, df_cons, df_blast_completo)
-    df_summary = build_summary_df(df_qc, df_blast_completo)
+    df_qc = build_qc_df(df_trim, df_cons, df_blast_completo, id_thresh)
+    df_summary = build_summary_df(df_qc, df_blast_completo, id_thresh, good_consensus_score)
     
     # --- 3. PRESENTATION / EXPORTING ---
-    export_to_excel(df_summary, df_blast_completo, df_qc, snakemake.output.report)
+    export_to_excel(df_summary, df_blast_completo, df_qc, snakemake.output.report, max_excel_hits, good_consensus_score)
 
 
 
