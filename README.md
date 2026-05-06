@@ -144,9 +144,9 @@ The pipeline generates intermediate files in the `results/` directory. The prima
 
 This comprehensive report contains three sheets:
 1. **Summary:** The definitive identification report. Samples are automatically flagged with conditional coloring:
-   * 🟩 **OK:** Solid identification matching a type strain (Identity ≥ `identity_threshold`).
-   * 🟨 **Ambiguous:** Multiple species match the criteria.
-   * 🟦 **No hit with type:** Has hits meeting the identity threshold, but none are recognized type strains.
+   * 🟩 **OK:** One single identification matching a type strain (Identity ≥ `identity_threshold`).
+   * 🟨 **Ambiguous:** Multiple species match the criteria. 
+   * 🟦 **No hit with type:** Has hits above the identity threshold, but none are recognized type strains.
    * 🟪 **Below identity threshold:** No hits with any GenBank entries met the required threshold. *(You might have found something new!)*
    * 🟥 **Bad quality:** The consensus score is below the `good_consensus_score`, making identification unreliable.
 2. **BLAST_Details:** Contains the top raw hits from the database for every sample, including E-values and Coverage, limited by your `max_excel_hits` setting.
@@ -162,23 +162,22 @@ The taxonomic identification status is determined dynamically based on the param
    * *If Yes ->* Flags as **Bad quality**.
 2. **Rule 2 (Ambiguity Check):** Are there multiple valid type strain species matching the criteria? 
    * *If Yes ->* Flags as **Ambiguous**.
-3. **Rule 3 (Identity Check):** Is the highest identity found across ALL hits strictly lower than the `identity_threshold`? 
+3. **Rule 3 (Identity Check):** Are there no hits at all above the `identity_threshold`? 
    * *If Yes ->* Flags as **Below identity threshold**.
-4. **Rule 4 (Type Strain Check):** Did the sample pass the identity threshold but fail to match against any recognized "type material"? 
+4. **Rule 4 (Type Strain Check):** Are there hits above the identity threshold but none are a recognized "type material"? 
    * *If Yes ->* Flags as **No hit with type**.
-5. **Rule 5 (Success):** If none of the above rules are triggered, the sample is verified.
+5. **Rule 5 (OK):** If none of the above rules are triggered, the sample has a straight-forward taxonomic identification.
    * *Result ->* Flags as **OK**.
 
 These rules can be modified by altering the following code, found at line 227 of the `final_report.py` script:
 
 ```python
-conditions = [
-        df_final['Consensus_score'] < good_cons_score,                      # Rule 1: Poor sequence quality
-        df_final['Other possible species'] != "",                           # Rule 2: More than one valid species found
-        df_final['Highest identity overall'] < id_thresh,                   # Rule 3: No hit above threshold
-        df_final['Top hit (type strain)'] == "None"                         # Rule 4: No type found above threshold
+    conditions = [
+        df_final['Consensus_score'] < good_cons_score,      # Rule 1: Poor sequence quality
+        df_final['Other possible species'] != "",           # Rule 2: More than one valid species found
+        df_final['Highest identity overall'] < id_thresh,   # Rule 3: No hit above threshold
+        df_final['Top hit (type strain)'] == "None"         # Rule 4: No type found above threshold
     ]
-    
     labels = [
         "Bad quality",
         "Ambiguous",
