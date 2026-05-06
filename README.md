@@ -132,7 +132,8 @@ Then, run the pipeline increasing the `ncbi_connection` resource (e.g., to 4 sim
 snakemake --cores all --resources ncbi_connection=4
 ```
 
-*(Tip: To perform a dry-run and see which steps will be executed without actually running them, add the `-n` flag to any of the commands above).*
+(Tip: To perform a dry-run and see which steps will be executed without actually running them, add the `-n` flag to any of the commands above).
+
 ---
 
 ## <a id="outputs-interpretation"></a>📊 Outputs & Interpretation
