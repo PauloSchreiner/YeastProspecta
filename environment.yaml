@@ -1,0 +1,14 @@
+name: yeastprospecta
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python>=3.10
+  - snakemake>=7.0
+  - blast
+  - emboss
+  - pandas
+  - numpy
+  - biopython
+  - openpyxl
