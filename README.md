@@ -5,7 +5,7 @@
 
 **YeastProspecta** is an automated, scalable, and reproducible Snakemake pipeline designed for the comprehensive analysis of Sanger sequencing data in bioprospecting projects. It automates the processing of Forward (F) and Reverse (R) `.ab1` read pairs, from raw sequence trimming to species identification via automated NCBI BLAST searches.
 
-The pipeline applies quality control thresholds, assembles consensus sequences, performs remote alignments against the NCBI database, and aggregates all results and metrics into a highly readable, color-coded Excel report to facilitate taxonomic identification.
+The pipeline applies quality control thresholds, assembles consensus sequences, performs remote alignments against the NCBI database, and aggregates all results and metrics into a readable, color-coded Excel report to facilitate taxonomic identification.
 
 ---
 
@@ -36,7 +36,7 @@ YeastProspecta relies on Conda/Mamba for environment management to ensure strict
 
 ### 1. Clone the repository
 ```bash
-git clone [https://github.com/](https://github.com/)[PauloSchreiner]/YeastProspecta.git
+git clone https://github.com/PauloSchreiner/YeastProspecta.git
 cd YeastProspecta
 ```
 
@@ -63,7 +63,7 @@ To ensure the pipeline pairs the reads correctly, files must follow a strict nam
 
 *(Example: `AM003_F.ab1` and `AM003_R.ab1`)*
 
-**Utility Script:** A pre-processing script is provided to standardize raw sequencing names coming from sequencing. If you wish to use it, run:
+**Utility Script:** A pre-processing script is provided to standardize raw sequencing names coming straight from the sequencing machine. If you wish to use it, run:
 ```bash
 python scripts/utils/rename_samples.py --dir path/to/your/raw_data --execute
 ```
@@ -104,12 +104,6 @@ If you plan to run multiple BLAST jobs simultaneously, an **NCBI API Key** is re
 ```bash
 export NCBI_KEY="your_api_key_here"
 ```
-3. Update the `profiles/ncbi_safe/config.yaml` file to allow parallel BLAST requests:
-```yaml
-resources:
-  - ncbi_connection=4  # Set this to the number of parallel requests allowed by your key
-```
-*Note: If you do not have an API key, keep `ncbi_connection=1` to ensure safe, sequential requests.*
 
 ---
 
