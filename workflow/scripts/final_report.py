@@ -28,11 +28,16 @@ def parse_blast_xmls(xml_path_list: list) -> pd.DataFrame:
         for hit_index, hit in enumerate(qresult, start=1):
             hsp = hit[0] 
 
+            indels = hsp.gap_num
+            substituicoes = hsp.aln_span - hsp.ident_num - hsp.gap_num
+
             rows.append({
                 "Sample": sample.zfill(3),
                 "Hit #": hit_index,
                 "Accession": hit.accession,
                 "Identity": round((hsp.ident_num / hsp.aln_span) * 100, 3),
+                "Subst": substituicoes,
+                "Indels": indels,
                 "Coverage": round((hsp.query_span / qresult.seq_len) * 100, 3),
                 "E-value": hsp.evalue,
                 "Title": hit.description
@@ -185,8 +190,13 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
     # Instead of looping, we drop duplicates keeping only the FIRST row of each sample. 
     # This instantly isolates our Top Hit.
     df_top = df_type.drop_duplicates(subset=['Sample'], keep='first').copy()
-    df_top = df_top[['Sample', 'Species', 'Identity']].rename(
-        columns={'Species': 'Top hit (type strain)', 'Identity': 'Identity (type strain)'}
+    df_top = df_top[['Sample', 'Species', 'Identity', 'Subst', 'Indels']].rename(
+        columns={
+            'Species': 'Top hit (type)', 
+            'Identity': 'Identity (type)',
+            'Subst': 'Subst (type)',
+            'Indels': 'Indels (type)'
+        }
     )
 
     # Getting highest identity overall
@@ -217,10 +227,13 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
     df_final = df_final.merge(df_highest_id, on='Sample', how='left')
     
     # Fill blanks for samples that had NO hits passing above threshold or Type Strain filters
-    df_final['Top hit (type strain)'] = df_final['Top hit (type strain)'].fillna("None")
-    df_final['Identity (type strain)'] = df_final['Identity (type strain)'].fillna(0)
+    df_final['Top hit (type)'] = df_final['Top hit (type)'].fillna("None")
+    df_final['Identity (type)'] = df_final['Identity (type)'].fillna(0)
+    df_final['Subst (type)'] = df_final['Subst (type)'].fillna(0).astype(int)
+    df_final['Indels (type)'] = df_final['Indels (type)'].fillna(0).astype(int)
     df_final['Highest identity overall'] = df_final['Highest identity overall'].fillna(0) 
     df_final['Other possible species'] = df_final['Other possible species'].fillna("")
+    
     
     # --- BUSINESS RULES (STATUS EVALUATION) ---
     # np.select evaluates multiple conditions simultaneously, replacing if/elif/else loops!
@@ -228,7 +241,7 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
         df_final['Consensus_score'] < good_cons_score,                      # Rule 1: Poor sequence quality
         df_final['Other possible species'] != "",                           # Rule 2: More than one valid species found
         df_final['Highest identity overall'] < id_thresh,                   # Rule 3: No hit above threshold
-        df_final['Top hit (type strain)'] == "None"                         # Rule 4: No type found above threshold
+        df_final['Top hit (type)'] == "None"                         # Rule 4: No type found above threshold
     ]
     
     labels = [
@@ -242,7 +255,7 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
     df_final['Status'] = np.select(conditions, labels, default="OK")
     
     # Reorder the final columns and return
-    colunas_finais = ["Sample", "Status", "Top hit (type strain)", "Identity (type strain)", "Highest identity overall", "Other possible species"]
+    colunas_finais = ["Sample", "Status", "Top hit (type)", "Identity (type)", "Subst (type)", "Indels (type)", "Highest identity overall", "Other possible species"]
     
     return df_final[colunas_finais]
 
