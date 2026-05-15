@@ -89,6 +89,7 @@ rule blast:
         fasta = os.path.join(CONSENSUS_DIR, "{sample}_consensus.fasta")
     output:
         xml = os.path.join(BLAST_RAW_DIR, "{sample}_blast.xml")
+    retries: 4
     params:
         blast_db = config["parameters"]["blast_database"]        
     resources:
