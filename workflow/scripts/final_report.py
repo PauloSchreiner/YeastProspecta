@@ -5,7 +5,7 @@ from Bio import SearchIO
 import re
 import os 
 
-from openpyxl.formatting.rule import CellIsRule
+from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.styles import PatternFill
 
 
@@ -28,16 +28,22 @@ def parse_blast_xmls(xml_path_list: list) -> pd.DataFrame:
         for hit_index, hit in enumerate(qresult, start=1):
             hsp = hit[0] 
 
-            indels = hsp.gap_num
-            substituicoes = hsp.aln_span - hsp.ident_num - hsp.gap_num
+            qseq = str(hsp.query.seq)
+            hseq = str(hsp.hit.seq)
+
+            # Extract indel events
+            indels, subs, MNV_positions = parse_evo_events(qseq, hseq)
+
+            MNV_positions = str(MNV_positions).strip('[]') # Transform list into string and remove []
 
             rows.append({
                 "Sample": sample.zfill(3),
                 "Hit #": hit_index,
                 "Accession": hit.accession,
                 "Identity": round((hsp.ident_num / hsp.aln_span) * 100, 3),
-                "Subst": substituicoes,
+                "Subst": subs,
                 "Indels": indels,
+                "MNV positions": MNV_positions,
                 "Coverage": round((hsp.query_span / qresult.seq_len) * 100, 3),
                 "E-value": hsp.evalue,
                 "Title": hit.description
@@ -130,6 +136,48 @@ def is_type(ncbi_title:str) -> bool:
 
 
 
+def parse_evo_events(qseq: str, hseq: str) -> (int, int, list):
+  """
+  Based on a previously aligned pair of query sequence and hit sequence,
+  returns three values: the amount of indel events (non-contiguous), 
+  the amount of substitution events (non-contiguous)
+  and the positions of MNVs (Multiple-Nucleotide Variants, AKA contiguous indels or substitutions)
+  """
+  
+  indel_events = subst_events = 0
+  in_subst_block = in_indel_block = False
+  MNV_pos = []
+
+  position = 0
+  for qchar, hchar in zip(qseq, hseq):
+    
+    # Indel
+    if qchar == "-" or hchar == "-": 
+      if in_indel_block: 
+        MNV_pos.append(position)
+      else: # If this is the first time seeing this block
+        indel_events += 1
+      in_indel_block = True 
+
+    # Substitution
+    elif qchar != hchar: 
+      if in_subst_block:
+        MNV_pos.append(position)
+      else: # If this is the first time seeing this block
+        subst_events += 1
+      in_subst_block = True
+    
+    # Match (no subst or indel)
+    else:
+      in_subst_block = in_indel_block = False
+    
+    # Updates position 
+    position += 1
+
+  return indel_events, subst_events, MNV_pos
+
+
+
 def build_qc_df(df_trim: pd.DataFrame, df_cons: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: float) -> pd.DataFrame:
     """
     Joins Trimming and Consensus data, and calculates the number of hits above the identity threshold from the BLAST results.
@@ -164,7 +212,8 @@ def build_qc_df(df_trim: pd.DataFrame, df_cons: pd.DataFrame, df_blast: pd.DataF
 
 
 
-def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: float, good_cons_score: int) -> pd.DataFrame:
+def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: float, 
+                     good_cons_score: int, min_len: int, min_cov: float) -> pd.DataFrame:
     """
     Generates the summary report by cross-referencing QC data with the Top Hits from BLAST.
     Initially filters for Type Strains with Identity above threshold.
@@ -190,12 +239,15 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
     # Instead of looping, we drop duplicates keeping only the FIRST row of each sample. 
     # This instantly isolates our Top Hit.
     df_top = df_type.drop_duplicates(subset=['Sample'], keep='first').copy()
-    df_top = df_top[['Sample', 'Species', 'Identity', 'Subst', 'Indels']].rename(
+    df_top = df_top[['Sample', 'Species', 'Identity', 'Accession', 'Coverage', 'Subst', 'Indels', 'MNV positions']].rename(
         columns={
-            'Species': 'Top hit (type)', 
+            'Species': 'Top hit (type)',
             'Identity': 'Identity (type)',
-            'Subst': 'Subst (type)',
-            'Indels': 'Indels (type)'
+            'Accession': 'Accession (type)',
+            'Coverage': 'Coverage (type)',
+            'Subst': 'Subst events',
+            'Indels': 'Indel events',
+            'MNV positions' : 'MNV positions'
         }
     )
 
@@ -219,7 +271,7 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
     hits_above_thresh_name = 'Hits_above_' + str(id_thresh) + '_id'
 
     # Get the baseline QC data needed for the final rules
-    df_final = df_qc.reset_index()[['Sample', 'Consensus_score', hits_above_thresh_name]].copy()
+    df_final = df_qc.reset_index()[['Sample', 'Consensus_score', 'Consensus_len', hits_above_thresh_name]].copy()
     
     # Merge (Left Join) the Top Hits and the Other Species back into our baseline
     df_final = df_final.merge(df_top, on='Sample', how='left')
@@ -229,8 +281,11 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
     # Fill blanks for samples that had NO hits passing above threshold or Type Strain filters
     df_final['Top hit (type)'] = df_final['Top hit (type)'].fillna("None")
     df_final['Identity (type)'] = df_final['Identity (type)'].fillna(0)
-    df_final['Subst (type)'] = df_final['Subst (type)'].fillna(0).astype(int)
-    df_final['Indels (type)'] = df_final['Indels (type)'].fillna(0).astype(int)
+    df_final['Accession (type)'] = df_final['Accession (type)'].fillna("N/A")
+    df_final['Coverage (type)'] = df_final['Coverage (type)'].fillna(0)
+    df_final['Subst events'] = df_final['Subst events'].fillna(0).astype(int)
+    df_final['Indel events'] = df_final['Indel events'].fillna(0).astype(int)
+    df_final['MNV positions'] = df_final['MNV positions'].fillna("")
     df_final['Highest identity overall'] = df_final['Highest identity overall'].fillna(0) 
     df_final['Other possible species'] = df_final['Other possible species'].fillna("")
     
@@ -238,24 +293,41 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
     # --- BUSINESS RULES (STATUS EVALUATION) ---
     # np.select evaluates multiple conditions simultaneously, replacing if/elif/else loops!
     conditions = [
-        df_final['Consensus_score'] < good_cons_score,                      # Rule 1: Poor sequence quality
-        df_final['Other possible species'] != "",                           # Rule 2: More than one valid species found
-        df_final['Highest identity overall'] < id_thresh,                   # Rule 3: No hit above threshold
-        df_final['Top hit (type)'] == "None"                         # Rule 4: No type found above threshold
+        df_final['Consensus_score'] < good_cons_score,      # 1. Bad quality
+        df_final['Consensus_len'] < min_len,                # 2. Short sequence
+        df_final['Coverage (type)'] < min_cov,              # 3. Low coverage
+        df_final['Other possible species'] != "",           # 4. Ambiguous
+        df_final['Highest identity overall'] < id_thresh,   # 5. No hit above threshold
+        df_final['Top hit (type)'] == "None"                # 6. No hit with type
     ]
     
     labels = [
         "Bad quality",
+        "Short sequence",
+        "Low coverage",
         "Ambiguous",
         "No hit above threshold",
         "No hit with type"
     ]
     
+    df_final['Status'] = np.select(conditions, labels, default="OK")
+    
     # Applies the conditions in order. If none match, defaults to "OK".
     df_final['Status'] = np.select(conditions, labels, default="OK")
     
     # Reorder the final columns and return
-    colunas_finais = ["Sample", "Status", "Top hit (type)", "Identity (type)", "Subst (type)", "Indels (type)", "Highest identity overall", "Other possible species"]
+    colunas_finais = ["Sample", 
+                      "Status", 
+                      "Top hit (type)", 
+                      "Identity (type)", 
+                      "Coverage (type)",
+                      "Accession (type)",
+                      "Consensus_len",
+                      "Subst events", 
+                      "Indel events", 
+                      "MNV positions", 
+                      "Highest identity overall", 
+                      "Other possible species"]
     
     return df_final[colunas_finais]
 
@@ -292,17 +364,26 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
     """
     Applies all conditional formatting and styling to the entire Excel workbook.
     """
-    # 1. DEFINE PRETTY HUES
+
     colors = {
-        "green":      PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid'),
-        "lime":       PatternFill(start_color='E3EDB5', end_color='E3EDB5', fill_type='solid'),
-        "yellow":     PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid'),
-        "blue":       PatternFill(start_color='89CFF0', end_color='89CFF0', fill_type='solid'),        
-        "red":        PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid'),
-        "purple":     PatternFill(start_color='E4CCFF', end_color='E4CCFF', fill_type='solid'),
-        "light_gray": PatternFill(start_color='F2F2F2', end_color='F2F2F2', fill_type='solid'),
-        "white":      PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')
-    }
+    "green":        PatternFill(start_color='D4EDDA', end_color='D4EDDA', fill_type='solid'), 
+    "lime":         PatternFill(start_color='E9F5BC', end_color='E9F5BC', fill_type='solid'), 
+    "yellow":       PatternFill(start_color='FFF3BF', end_color='FFF3BF', fill_type='solid'), 
+    
+    "blue":         PatternFill(start_color='D1ECF1', end_color='D1ECF1', fill_type='solid'), 
+    "red":          PatternFill(start_color='F8D7DA', end_color='F8D7DA', fill_type='solid'), 
+    "purple":       PatternFill(start_color='EADDFF', end_color='EADDFF', fill_type='solid'), 
+    
+    "light_gray":   PatternFill(start_color='F2F2F2', end_color='F2F2F2', fill_type='solid'), 
+    "white":        PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid'), 
+
+    "gray": PatternFill(start_color='D9D9D9', end_color='D9D9D9', fill_type='solid'), 
+    "brown": PatternFill(start_color='E6D5C3', end_color='E6D5C3', fill_type='solid'),
+    
+    "event_blue":   PatternFill(start_color='CFE2FF', end_color='CFE2FF', fill_type='solid'), 
+    "event_purple": PatternFill(start_color='F3E5F5', end_color='F3E5F5', fill_type='solid'), 
+    "mnv_red":      PatternFill(start_color='FADBD8', end_color='FADBD8', fill_type='solid')  
+}
 
     # --- SHEET 1: SUMMARY (Status Colors) ---
     ws_sum = writer.sheets["Summary"]
@@ -313,6 +394,30 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Ambiguous"'], fill=colors["yellow"]))
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No hit with type"'], fill=colors["blue"]))
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No hit above threshold"'], fill=colors["purple"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Short sequence"'], fill=colors["gray"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Low coverage"'], fill=colors["brown"]))
+
+    # Color coding evolutionary events (indels and subst) and MNVs
+    col_map = {cell.value: cell.column_letter for cell in ws_sum[1]}
+    sub_col = col_map.get("Subst events")
+    ind_col = col_map.get("Indel events")
+    mnv_col = col_map.get("MNV positions")
+
+    last_row = len(df_summary) + 1
+
+    if sub_col and ind_col:
+        range_to_format = f"{sub_col}2:{ind_col}{last_row}"
+        # REGRA 1: Soma >= 6 (Roxo)
+        ws_sum.conditional_formatting.add(range_to_format, 
+            FormulaRule(formula=[f"=(${sub_col}2+${ind_col}2)>=6"], fill=colors["event_purple"]))
+        # REGRA 2: Soma entre 4 e 5 (Azul)
+        ws_sum.conditional_formatting.add(range_to_format, 
+            FormulaRule(formula=[f"=AND((${sub_col}2+${ind_col}2)>=4, (${sub_col}2+${ind_col}2)<=5)"], fill=colors["event_blue"]))
+    
+    if mnv_col:
+        mnv_range = f"{mnv_col}2:{mnv_col}{last_row}"
+        ws_sum.conditional_formatting.add(mnv_range, 
+            FormulaRule(formula=[f'LEN(TRIM(${mnv_col}2))>0'], fill=colors["mnv_red"]))
 
     # --- SHEET 2: BLAST DETAILS (Alternating Sample Groups) ---
     ws_blast = writer.sheets["BLAST_Details"]
@@ -391,6 +496,8 @@ def main():
     id_thresh = float(snakemake.params.id_thresh)
     max_excel_hits = int(snakemake.params.max_excel_hits)
     good_consensus_score = int(snakemake.params.good_consensus_score)
+    min_len = int(snakemake.params.min_consensus_len)
+    min_cov = float(snakemake.params.min_coverage)
 
     # --- 1. EXTRACTION ---
     df_trim = extract_trim_data(snakemake.input.trim_summary)
@@ -399,7 +506,12 @@ def main():
     
     # --- 2. PROCESSING ---
     df_qc = build_qc_df(df_trim, df_cons, df_blast_completo, id_thresh)
-    df_summary = build_summary_df(df_qc, df_blast_completo, id_thresh, good_consensus_score)
+    df_summary = build_summary_df(df_qc, 
+                                  df_blast_completo, 
+                                  id_thresh, 
+                                  good_consensus_score, 
+                                  min_len, 
+                                  min_cov)
     
     # --- 3. PRESENTATION / EXPORTING ---
     export_to_excel(df_summary, df_blast_completo, df_qc, snakemake.output.report, max_excel_hits, good_consensus_score)

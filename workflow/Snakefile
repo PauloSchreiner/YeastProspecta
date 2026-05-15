@@ -116,7 +116,10 @@ rule final_report:
     params:
         id_thresh = config["parameters"]["identity_threshold"],
         good_consensus_score = config["parameters"]["good_consensus_score"],
-        max_excel_hits = config["parameters"]["max_excel_hits"]
+        max_excel_hits = config["parameters"]["max_excel_hits"],
+        min_consensus_len = config["parameters"]["min_consensus_len"],
+        min_coverage = config["parameters"]["min_coverage"]
+
     script:
         "scripts/final_report.py"
 
