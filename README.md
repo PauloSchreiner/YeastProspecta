@@ -26,7 +26,7 @@ The pipeline consists of three major steps:
 
 1. **Quality Trimming:** Reads raw `.ab1` chromatograms and performs quality trimming using Mott's algorithm based on a user-defined error probability cutoff.
 2. **Consensus Assembly:** Aligns the paired trimmed reads (F and R) to generate a high-quality consensus sequence using EMBOSS `merger`.
-3. **Taxonomic Identification (BLAST):** Automatically queries the consensus sequences against the specified database (e.g., NCBI `nt`). It retrieves the top 500 hits, extracts binomial species names, filters for type strains, and evaluates the final identification status based on strict identity, sequence length, coverage, and consensus score rules. Other details and metrics are displayed in `final_report.xlsx`.
+3. **Taxonomic Identification (BLAST):** Automatically queries the consensus sequences against the specified database (e.g., NCBI `nt`). It retrieves the top 500 hits, extracts binomial species names, filters for type strains, and evaluates the final identification status based on strict identity, sequence length, coverage, consensus score, and sequence ambiguity (IUPAC codes) rules. Other details and metrics are displayed in `final_report.xlsx`.
 
 ---
 
@@ -36,7 +36,7 @@ YeastProspecta relies on Conda/Mamba for environment management to ensure strict
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/PauloSchreiner/YeastProspecta.git
+git clone [https://github.com/PauloSchreiner/YeastProspecta.git](https://github.com/PauloSchreiner/YeastProspecta.git)
 cd YeastProspecta
 ```
 
@@ -93,6 +93,7 @@ parameters:
   good_consensus_score: 2000      # Threshold for a reliable consensus alignment score (EMBOSS merger)
   min_consensus_len: 500          # Minimum consensus length required for valid identification
   min_coverage: 95.0              # Minimum BLAST alignment coverage % required 
+  max_ambiguous_bases: 5          # Max allowed IUPAC ambiguous codes (detects mixed cultures)
   max_excel_hits: 20              # Max amount of BLAST hits exported to the BLAST_Details tab
 ```
 
@@ -147,11 +148,12 @@ The pipeline generates intermediate files in the `results/` directory. The prima
 This comprehensive report contains three sheets:
 1. **Summary:** The definitive identification report. Includes taxonomic assignment, NCBI accession numbers, alignment coverage, and evolutionary mutational events (Substitutions, Indels, and Multiple-Nucleotide Variants - MNVs). Samples are automatically flagged with conditional coloring:
    * 🟩 **OK:** One single identification matching a type strain (Identity ≥ `identity_threshold`).
-   * 🟨 **Ambiguous:** Multiple species match the criteria. 
+   * 🟨 **Many species:** Multiple species match the criteria. 
    * 🟦 **No hit with type:** Has hits above the identity threshold, but none are recognized type strains.
    * 🟪 **No hit above threshold:** No hits with any GenBank entries met the required threshold. *(You might have found something new!)*
    * ⬜ **Short sequence:** The consensus sequence length is below `min_consensus_len`.
    * 🟫 **Low coverage:** The alignment coverage against the type strain is below `min_coverage`.
+   * 🟧 **Ambiguous bases:** High number of ambiguous bases (IUPAC codes) detected; suggests **mixed cultures** or intragenomic variation.
    * 🟥 **Bad quality:** The consensus score is below the `good_consensus_score`, making identification unreliable.
 2. **BLAST_Details:** Contains the top raw hits from the database for every sample, including E-values and Coverage, limited by your `max_excel_hits` setting.
 3. **Quality_Control:** Detailed metrics for sequence lengths (F, R, and Consensus) and EMBOSS alignment scores, visually color-coded based on your chosen consensus baseline.
@@ -162,45 +164,50 @@ This comprehensive report contains three sheets:
 
 The taxonomic identification status is determined dynamically based on the parameters set in your `config.yaml`. The pipeline evaluates each sample top-to-bottom using the following logical hierarchy:
 
-1. **Rule 1 (Quality Check):** Is the `Consensus_score` strictly lower than `good_consensus_score`? 
+1. **Rule 1:** Is the `Consensus_score` strictly lower than `good_consensus_score`? 
    * *If Yes ->* Flags as **🟥 Bad quality**.
-2. **Rule 2 (Length Check):** Is the `Consensus_len` strictly lower than `min_consensus_len`?
+2. **Rule 2:** Is the `Consensus_len` strictly lower than `min_consensus_len`?
    * *If Yes ->* Flags as **⬜ Short sequence**.
-3. **Rule 3 (Coverage Check):** Is the `Coverage` against the top hit strictly lower than `min_coverage`?
+3. **Rule 3:** Is the `Coverage` against the top hit strictly lower than `min_coverage`?
    * *If Yes ->* Flags as **🟫 Low coverage**.
-4. **Rule 4 (Ambiguity Check):** Are there multiple valid type strain species matching the criteria? 
-   * *If Yes ->* Flags as **🟨 Ambiguous**.
-5. **Rule 5 (Identity Check):** Are there no hits at all above the `identity_threshold`? 
+4. **Rule 4:** Is the `Ambiguous_bases` count strictly higher than `max_ambiguous_bases`?
+   * *If Yes ->* Flags as **🟧 Ambiguous bases**.
+5. **Rule 5:** Are there multiple valid type strain species matching the criteria? 
+   * *If Yes ->* Flags as **🟨 Many species**.
+6. **Rule 6:** Are there no hits at all above the `identity_threshold`? 
    * *If Yes ->* Flags as **🟪 No hit above threshold**.
-6. **Rule 6 (Type Strain Check):** Are there hits above the identity threshold but none are a recognized "type material"? 
+7. **Rule 7:** Are there hits above the identity threshold but none are a recognized "type material"? 
    * *If Yes ->* Flags as **🟦 No hit with type**.
-7. **Rule 7 (OK):** If none of the above rules are triggered, the sample has a straight-forward taxonomic identification.
+8. **Rule 8:** If none of the above rules are triggered, the sample has a straight-forward taxonomic identification.
    * *Result ->* Flags as **🟩 OK**.
 
 These rules can be modified by altering the following code, found in the `final_report.py` script:
 
 ```python
-    conditions = [
-        df_final['Consensus_score'] < good_cons_score,      # Rule 1: Poor sequence quality
-        df_final['Consensus_len'] < min_len,                # Rule 2: Short sequence
-        df_final['Coverage (type)'] < min_cov,              # Rule 3: Low coverage
-        df_final['Other possible species'] != "",           # Rule 4: Ambiguous
-        df_final['Highest identity overall'] < id_thresh,   # Rule 5: No hit above threshold
-        df_final['Top hit (type)'] == "None"                # Rule 6: No type found above threshold
-    ]
+   conditions = [
+        df_final['Consensus_score'] < good_cons_score,      # 1. Bad quality
+        df_final['Consensus_len'] < min_len,                # 2. Short sequence
+        df_final['Coverage (type)'] < min_cov,              # 3. Low coverage
+        df_final['Ambiguous_bases'] > max_ambig,            # 4. Ambiguous bases
+        df_final['Other possible species'] != "",           # 5. Many species
+        df_final['Highest identity overall'] < id_thresh,   # 6. No hit above threshold
+        df_final['Top hit (type)'] == "None"                # 7. No hit with type
+   ]
     
-    labels = [
+   labels = [
         "Bad quality",
         "Short sequence",
         "Low coverage",
-        "Ambiguous",
+        "Ambiguous bases",
+        "Many species",
         "No hit above threshold",
         "No hit with type"
-    ]
+   ]
 
 # Note that the script evaluates these rules from top to bottom. 
 # The first rule that evaluates to True assigns the status. 
 # If no rules are triggered, the sample is marked as OK.
 ```
+---
 ---
 **Created and maintained by:** *Paulo Schreiner / Prof. Dr. Diego Bonatto - Laboratório de Biologia Computacional e Molecular (LBCM) - UFRGS* **Contact:** *paulorangelschreiner@gmail.com*
