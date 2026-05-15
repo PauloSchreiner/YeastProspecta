@@ -105,12 +105,12 @@ rule blast:
         -outfmt 5
         """
 
-
 rule final_report:
     input: 
         xmls = expand(os.path.join(BLAST_RAW_DIR, "{sample}_blast.xml"), sample=unique_samples),
         trim_summary = os.path.join(SUMMARY_DIR, "trim_metrics.tsv"),
-        consensus_summary = os.path.join(SUMMARY_DIR, "consensus_summary.tsv")
+        consensus_summary = os.path.join(SUMMARY_DIR, "consensus_summary.tsv"),
+        fastas = expand(os.path.join(CONSENSUS_DIR, "{sample}_consensus.fasta"), sample=unique_samples)
     output: 
         report = os.path.join(SUMMARY_DIR, "final_report.xlsx")
     params:
@@ -118,8 +118,8 @@ rule final_report:
         good_consensus_score = config["parameters"]["good_consensus_score"],
         max_excel_hits = config["parameters"]["max_excel_hits"],
         min_consensus_len = config["parameters"]["min_consensus_len"],
-        min_coverage = config["parameters"]["min_coverage"]
-
+        min_coverage = config["parameters"]["min_coverage"],
+        max_ambiguous_bases = config["parameters"]["max_ambiguous_bases"]
     script:
         "scripts/final_report.py"
 

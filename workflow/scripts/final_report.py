@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from Bio import SearchIO
+from Bio import SearchIO, SeqIO
 
 import re
 import os 
@@ -51,6 +51,27 @@ def parse_blast_xmls(xml_path_list: list) -> pd.DataFrame:
 
     return pd.DataFrame(rows)
 
+def extract_ambiguity_data(fasta_path_list: list) -> pd.DataFrame:
+    """
+    Reads the consensus FASTA files and counts the number of ambiguous 
+    bases (IUPAC codes and Ns) to detect mixed cultures or intragenomic variation.
+    """
+    rows = []
+    for fasta in fasta_path_list:
+        sample = os.path.basename(fasta).split(".")[0].replace("_consensus", "").zfill(3)
+        
+        # Read the FASTA
+        record = list(SeqIO.parse(fasta, "fasta"))[0]
+        seq = str(record.seq).upper()
+        
+        # Count anything that is not A, T, C, G or - (gap)
+        ambiguous_count = len(re.findall(r'[^ATCG-]', seq))
+        
+        rows.append({"Sample_ID": sample, "Ambiguous_bases": ambiguous_count})
+        
+    df = pd.DataFrame(rows)
+    df.set_index("Sample_ID", inplace=True)
+    return df
 
 
 def extract_trim_data(trim_path: str) -> pd.DataFrame:
@@ -178,26 +199,28 @@ def parse_evo_events(qseq: str, hseq: str) -> (int, int, list):
 
 
 
-def build_qc_df(df_trim: pd.DataFrame, df_cons: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: float) -> pd.DataFrame:
+def build_qc_df(df_trim: pd.DataFrame, df_cons: pd.DataFrame, df_blast: pd.DataFrame, df_ambig: pd.DataFrame, id_thresh: float) -> pd.DataFrame:
     """
     Joins Trimming and Consensus data, and calculates the number of hits above the identity threshold from the BLAST results.
     Returns the consolidated Quality Control DataFrame ready for export.
     """
-    # 1. Join Trim and Consensus data. An 'outer' join ensures we don't lose samples that might be missing.
+    # Join Trim and Consensus data, as well as ambiguity data. 
+    # An 'outer' join ensures we don't lose samples that might be missing.
     df_qc = df_trim.join(df_cons, how='outer')
+    df_qc = df_qc.join(df_ambig, how='outer')
     
-    # 2. Calculate how many hits are above id threshold
+    # Calculate how many hits are above id threshold
     hits_above_thresh = df_blast[df_blast['Identity'] > id_thresh].groupby('Sample').size()
     
     # Name this new Series so it becomes a properly named column after joining
     hits_above_thresh.name = 'Hits_above_' + str(id_thresh) + '_id'
     
-    # 3. Add the hits_above_thresh count to the main QC DataFrame
+    # Add the hits_above_thresh count to the main QC DataFrame
     df_qc = df_qc.join(hits_above_thresh, how='outer')
     
-    # 4. NaN handling and Data Typing (Avoiding the "Float curse")
+    # NaN handling and Data Typing (Avoiding the "Float curse")
     # The Pandas 'Int64' type (capital 'I') allows integers to coexist with NaNs without converting the whole column to decimals.
-    colunas_numericas = ['F_len', 'R_len', 'Consensus_len', 'Consensus_score', hits_above_thresh.name]
+    colunas_numericas = ['F_len', 'R_len', 'Consensus_len', 'Consensus_score', 'Ambiguous_bases', hits_above_thresh.name]
     
     for col in colunas_numericas:
         if col in df_qc.columns:
@@ -213,7 +236,7 @@ def build_qc_df(df_trim: pd.DataFrame, df_cons: pd.DataFrame, df_blast: pd.DataF
 
 
 def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: float, 
-                     good_cons_score: int, min_len: int, min_cov: float) -> pd.DataFrame:
+                     good_cons_score: int, min_len: int, min_cov: float, max_ambig: int) -> pd.DataFrame:
     """
     Generates the summary report by cross-referencing QC data with the Top Hits from BLAST.
     Initially filters for Type Strains with Identity above threshold.
@@ -271,7 +294,7 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
     hits_above_thresh_name = 'Hits_above_' + str(id_thresh) + '_id'
 
     # Get the baseline QC data needed for the final rules
-    df_final = df_qc.reset_index()[['Sample', 'Consensus_score', 'Consensus_len', hits_above_thresh_name]].copy()
+    df_final = df_qc.reset_index()[['Sample', 'Consensus_score', 'Consensus_len','Ambiguous_bases', hits_above_thresh_name]].copy()
     
     # Merge (Left Join) the Top Hits and the Other Species back into our baseline
     df_final = df_final.merge(df_top, on='Sample', how='left')
@@ -296,22 +319,22 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
         df_final['Consensus_score'] < good_cons_score,      # 1. Bad quality
         df_final['Consensus_len'] < min_len,                # 2. Short sequence
         df_final['Coverage (type)'] < min_cov,              # 3. Low coverage
-        df_final['Other possible species'] != "",           # 4. Ambiguous
-        df_final['Highest identity overall'] < id_thresh,   # 5. No hit above threshold
-        df_final['Top hit (type)'] == "None"                # 6. No hit with type
+        df_final['Ambiguous_bases'] > max_ambig,            # 4. Ambiguous bases
+        df_final['Other possible species'] != "",           # 5. Many species
+        df_final['Highest identity overall'] < id_thresh,   # 6. No hit above threshold
+        df_final['Top hit (type)'] == "None"                # 7. No hit with type
     ]
     
     labels = [
         "Bad quality",
         "Short sequence",
         "Low coverage",
-        "Ambiguous",
+        "Ambiguous bases",
+        "Many species",
         "No hit above threshold",
         "No hit with type"
     ]
-    
-    df_final['Status'] = np.select(conditions, labels, default="OK")
-    
+        
     # Applies the conditions in order. If none match, defaults to "OK".
     df_final['Status'] = np.select(conditions, labels, default="OK")
     
@@ -360,7 +383,7 @@ def auto_adjust_columns(writer: pd.ExcelWriter, sheet_name: str):
         worksheet.column_dimensions[column_letter].width = adjusted_width
 
 
-def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame, good_cons_score: int):
+def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame, good_cons_score: int, max_ambig: int):
     """
     Applies all conditional formatting and styling to the entire Excel workbook.
     """
@@ -373,12 +396,13 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
     "blue":         PatternFill(start_color='D1ECF1', end_color='D1ECF1', fill_type='solid'), 
     "red":          PatternFill(start_color='F8D7DA', end_color='F8D7DA', fill_type='solid'), 
     "purple":       PatternFill(start_color='EADDFF', end_color='EADDFF', fill_type='solid'), 
+    "orange":       PatternFill(start_color='FFD8B1', end_color='FFD8B1', fill_type='solid'),
     
     "light_gray":   PatternFill(start_color='F2F2F2', end_color='F2F2F2', fill_type='solid'), 
     "white":        PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid'), 
 
-    "gray": PatternFill(start_color='D9D9D9', end_color='D9D9D9', fill_type='solid'), 
-    "brown": PatternFill(start_color='E6D5C3', end_color='E6D5C3', fill_type='solid'),
+    "gray":         PatternFill(start_color='D9D9D9', end_color='D9D9D9', fill_type='solid'), 
+    "brown":        PatternFill(start_color='E6D5C3', end_color='E6D5C3', fill_type='solid'),
     
     "event_blue":   PatternFill(start_color='CFE2FF', end_color='CFE2FF', fill_type='solid'), 
     "event_purple": PatternFill(start_color='F3E5F5', end_color='F3E5F5', fill_type='solid'), 
@@ -391,7 +415,8 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
     
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"OK"'], fill=colors["green"]))
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Bad quality"'], fill=colors["red"]))
-    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Ambiguous"'], fill=colors["yellow"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Many species"'], fill=colors["yellow"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Noisy consensus"'], fill=colors["orange"]))
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No hit with type"'], fill=colors["blue"]))
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No hit above threshold"'], fill=colors["purple"]))
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Short sequence"'], fill=colors["gray"]))
@@ -442,6 +467,17 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
             score_col_letter = cell.column_letter
             break
     
+    ambig_col_letter = None
+    for cell in ws_qc[1]:
+        if cell.value == "Ambiguous_bases":
+            ambig_col_letter = cell.column_letter
+            break
+            
+    if ambig_col_letter:
+        qc_ambig_range = f"{ambig_col_letter}2:{ambig_col_letter}{len(df_qc) + 1}"
+        ws_qc.conditional_formatting.add(qc_ambig_range, CellIsRule(operator='greaterThan', formula=[str(max_ambig)], fill=colors["orange"]))
+        
+    
     if score_col_letter:
         qc_range = f"{score_col_letter}2:{score_col_letter}{len(df_qc) + 1}"
         ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='greaterThan', formula=[str(good_cons_score * 1.2)], fill=colors["green"]))
@@ -450,7 +486,7 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
         ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='lessThanOrEqual', formula=[str(good_cons_score * 0.8)], fill=colors["red"]))
 
 
-def export_to_excel(df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame, output_file: str, max_excel_hits: int, good_cons_score: int):
+def export_to_excel(df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame, output_file: str, max_excel_hits: int, good_cons_score: int, max_ambig: int):
     """
     Orchestrates the export of DataFrames to Excel sheets, 
     applies visual filters (Top X hits), and triggers formatting.
@@ -485,7 +521,7 @@ def export_to_excel(df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.
         auto_adjust_columns(writer, "Quality_Control")
 
         # Apply conditional formatting based on the already filtered df_blast
-        apply_workbook_styling(writer, df_summary, df_blast_export, df_qc_export, good_cons_score)
+        apply_workbook_styling(writer, df_summary, df_blast_export, df_qc_export, good_cons_score, max_ambig)
 
 #
 # MAIN LOGIC
@@ -498,23 +534,26 @@ def main():
     good_consensus_score = int(snakemake.params.good_consensus_score)
     min_len = int(snakemake.params.min_consensus_len)
     min_cov = float(snakemake.params.min_coverage)
+    max_ambig = int(snakemake.params.max_ambiguous_bases)
 
     # --- 1. EXTRACTION ---
     df_trim = extract_trim_data(snakemake.input.trim_summary)
     df_cons = extract_consensus_data(snakemake.input.consensus_summary)
+    df_ambig = extract_ambiguity_data(snakemake.input.fastas) 
     df_blast_completo = parse_blast_xmls(snakemake.input.xmls)
     
     # --- 2. PROCESSING ---
-    df_qc = build_qc_df(df_trim, df_cons, df_blast_completo, id_thresh)
+    df_qc = build_qc_df(df_trim, df_cons, df_blast_completo, df_ambig, id_thresh)
     df_summary = build_summary_df(df_qc, 
                                   df_blast_completo, 
                                   id_thresh, 
                                   good_consensus_score, 
                                   min_len, 
-                                  min_cov)
+                                  min_cov,
+                                  max_ambig)
     
     # --- 3. PRESENTATION / EXPORTING ---
-    export_to_excel(df_summary, df_blast_completo, df_qc, snakemake.output.report, max_excel_hits, good_consensus_score)
+    export_to_excel(df_summary, df_blast_completo, df_qc, snakemake.output.report, max_excel_hits, good_consensus_score, max_ambig)
 
 
 
