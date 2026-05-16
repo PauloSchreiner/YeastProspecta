@@ -239,29 +239,21 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
                      good_cons_score: int, min_len: int, min_cov: float, max_ambig: int) -> pd.DataFrame:
     """
     Generates the summary report by cross-referencing QC data with the Top Hits from BLAST.
-    Initially filters for Type Strains with Identity above threshold.
-    Fully vectorized for maximum performance.
     """
     
-    # 1. Create Boolean Masks to filter the data
+    # 1. Isolamos TODAS as cepas tipo
     is_type_mask = df_blast["Title"].apply(is_type)
-    is_above_thresh_mask = df_blast["Identity"] > id_thresh
-    
-    # Apply both conditions at once using the bitwise '&'. 
-    # We use .copy() to create an independent DataFrame and avoid SettingWithCopyWarnings.
-    df_type = df_blast[is_type_mask & is_above_thresh_mask].copy()
+    df_all_type = df_blast[is_type_mask].copy()
 
-
-    # Extract the clean species name and remove brackets
-    df_type['Species'] = df_type['Title'].apply(extract_species_from_title)
-    df_type['Species'] = df_type['Species'].str.replace(r'[\[\]]', '', regex=True)
+    # Extrai o nome limpo da espécie
+    df_all_type['Species'] = df_all_type['Title'].apply(extract_species_from_title)
+    df_all_type['Species'] = df_all_type['Species'].str.replace(r'[\[\]]', '', regex=True)
     
-    # 2. Sort by Sample and Identity (Ensures the absolute best hit is at the top for each sample)
-    df_type.sort_values(by=['Sample', 'Identity'], ascending=[True, False], inplace=True)
+    # Ordena para garantir que o melhor hit absoluto de tipo fique no topo
+    df_all_type.sort_values(by=['Sample', 'Identity'], ascending=[True, False], inplace=True)
     
-    # Instead of looping, we drop duplicates keeping only the FIRST row of each sample. 
-    # This instantly isolates our Top Hit.
-    df_top = df_type.drop_duplicates(subset=['Sample'], keep='first').copy()
+    # O df_top agora captura o tipo mais próximo da história, mesmo que seja baixo!
+    df_top = df_all_type.drop_duplicates(subset=['Sample'], keep='first').copy()
     df_top = df_top[['Sample', 'Species', 'Identity', 'Accession', 'Coverage', 'Subst', 'Indels', 'MNV positions']].rename(
         columns={
             'Species': 'Top hit (type)',
@@ -274,19 +266,18 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
         }
     )
 
-    # Getting highest identity overall
-    df_highest_id = df_blast.groupby("Sample")["Identity"].max().rename("Highest identity overall")
+    # 2. Para a coluna de ambiguidades (Other possible species), só queremos os que competem ACIMA do threshold
+    df_type_above = df_all_type[df_all_type["Identity"] > id_thresh].copy()
     
-    # Keep only the best hit of EACH unique species per sample (to list other potential options)
-    df_unique_species = df_type.drop_duplicates(subset=['Sample', 'Species'], keep='first').copy()
-    
-    # Create the formatted string "Species (99.0%)" for everyone simultaneously
+    df_unique_species = df_type_above.drop_duplicates(subset=['Sample', 'Species'], keep='first').copy()
     df_unique_species['Formatted'] = df_unique_species['Species'] + " (" + df_unique_species['Identity'].astype(str) + "%)"
     
-    # Group by sample and join the strings separated by "; ", skipping the first row (since it's already our Top Hit)
+    # Agrupa pulando o primeiro hit (iloc[1:]), pois ele já é o nosso Top Hit
     df_other = df_unique_species.groupby('Sample').apply(
         lambda x: "; ".join(x['Formatted'].iloc[1:])
     ).reset_index(name='Other possible species')
+
+    df_highest_id = df_blast.groupby("Sample")["Identity"].max().rename("Highest identity overall")
     
     # --- MERGING EVERYTHING ---
     
@@ -318,21 +309,23 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
     conditions = [
         df_final['Consensus_score'] < good_cons_score,      # 1. Bad quality
         df_final['Consensus_len'] < min_len,                # 2. Short sequence
-        df_final['Coverage (type)'] < min_cov,              # 3. Low coverage
-        df_final['Ambiguous_bases'] > max_ambig,            # 4. Ambiguous bases
-        df_final['Other possible species'] != "",           # 5. Many species
-        df_final['Highest identity overall'] < id_thresh,   # 6. No hit above threshold
-        df_final['Top hit (type)'] == "None"                # 7. No hit with type
+        df_final['Ambiguous_bases'] > max_ambig,            # 3. Ambiguous bases
+        df_final['Coverage (type)'] < min_cov,              # 4. Low coverage 
+        df_final['Highest identity overall'] < id_thresh,   # 5. No hit above threshold
+        df_final['Identity (type)'] < id_thresh,            # 6. No hit with type
+        (df_final['Subst events'] + df_final['Indel events']) >= 4, # 7. 4 or more mutations
+        df_final['Other possible species'] != ""            # 8. Many species 
     ]
     
     labels = [
         "Bad quality",
         "Short sequence",
-        "Low coverage",
         "Ambiguous bases",
-        "Many species",
+        "Low coverage",
         "No hit above threshold",
-        "No hit with type"
+        "No hit with type",
+        "4 or more mutations", 
+        "Many species"
     ]
         
     # Applies the conditions in order. If none match, defaults to "OK".
@@ -346,6 +339,7 @@ def build_summary_df(df_qc: pd.DataFrame, df_blast: pd.DataFrame, id_thresh: flo
                       "Coverage (type)",
                       "Accession (type)",
                       "Consensus_len",
+                      "Consensus_score",
                       "Subst events", 
                       "Indel events", 
                       "MNV positions", 
@@ -383,7 +377,9 @@ def auto_adjust_columns(writer: pd.ExcelWriter, sheet_name: str):
         worksheet.column_dimensions[column_letter].width = adjusted_width
 
 
-def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame, good_cons_score: int, max_ambig: int):
+def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_blast: pd.DataFrame, 
+                           df_qc: pd.DataFrame, good_cons_score: int, max_ambig: int, 
+                           min_len: int, min_cov: float, id_thresh: float):
     """
     Applies all conditional formatting and styling to the entire Excel workbook.
     """
@@ -421,23 +417,81 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"No hit above threshold"'], fill=colors["purple"]))
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Short sequence"'], fill=colors["gray"]))
     ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"Low coverage"'], fill=colors["brown"]))
+    ws_sum.conditional_formatting.add(status_range, CellIsRule(operator='equal', formula=['"4 or more mutations"'], fill=colors["event_purple"]))
 
-    # Color coding evolutionary events (indels and subst) and MNVs
+    # --- Mapeamento e Regras de Métricas Técnicas e Taxonômicas ---
+    col_map = {cell.value: cell.column_letter for cell in ws_sum[1]}
+    
+    len_col = col_map.get("Consensus_len")
+    score_sum_col = col_map.get("Consensus_score")
+    cov_col = col_map.get("Coverage (type)")
+    id_type_col = col_map.get("Identity (type)")
+    highest_id_col = col_map.get("Highest identity overall")
+    
+    last_row = len(df_summary) + 1
+
+    # 1. Comprimento do Consenso abaixo do mínimo (Vermelho)
+    if len_col:
+        len_range = f"{len_col}2:{len_col}{last_row}"
+        ws_sum.conditional_formatting.add(len_range, CellIsRule(operator='lessThan', formula=[str(min_len)], fill=colors["red"]))
+
+    # 2. Score de Alinhamento abaixo do ideal (Vermelho)
+    if score_sum_col:
+        score_sum_range = f"{score_sum_col}2:{score_sum_col}{last_row}"
+        ws_sum.conditional_formatting.add(score_sum_range, CellIsRule(operator='lessThan', formula=[str(0.75 * good_cons_score)], fill=colors["red"]))
+
+    # 3. Cobertura de Alinhamento abaixo do mínimo (Vermelho)
+    if cov_col:
+        cov_range = f"{cov_col}2:{cov_col}{last_row}"
+        ws_sum.conditional_formatting.add(cov_range, CellIsRule(operator='lessThan', formula=[str(min_cov)], fill=colors["red"]))
+
+    # 4. Identidade com a Cepa Tipo abaixo do threshold (Vermelho)
+    if id_type_col:
+        id_type_range = f"{id_type_col}2:{id_type_col}{last_row}"
+        
+        # Abaixo do mínimo (Vermelho)
+        ws_sum.conditional_formatting.add(id_type_range, CellIsRule(operator='lessThan', formula=[str(id_thresh)], fill=colors["red"]))
+        # Entre o mínimo e 99.999% (Azul)
+        ws_sum.conditional_formatting.add(id_type_range, CellIsRule(operator='between', formula=[str(id_thresh), '99.999'], fill=colors["blue"]))
+        # Exatamente 100% (Verde)
+        ws_sum.conditional_formatting.add(id_type_range, CellIsRule(operator='equal', formula=['100'], fill=colors["green"]))
+
+    # 5. Alerta de Discrepância / Espécie Nova Críptica (Amarelo)
+    if highest_id_col:
+        highest_id_range = f"{highest_id_col}2:{highest_id_col}{last_row}"
+        
+        # Abaixo do mínimo (Vermelho)
+        ws_sum.conditional_formatting.add(highest_id_range, CellIsRule(operator='lessThan', formula=[str(id_thresh)], fill=colors["red"]))
+        # Entre o mínimo e 99.999% (Azul)
+        ws_sum.conditional_formatting.add(highest_id_range, CellIsRule(operator='between', formula=[str(id_thresh), '99.999'], fill=colors["blue"]))
+        # Exatamente 100% (Verde)
+        ws_sum.conditional_formatting.add(highest_id_range, CellIsRule(operator='equal', formula=['100'], fill=colors["green"]))
+
+        # Alerta de Discrepância / Cepa Nova (Amarelo)
+        if id_type_col:
+            ws_sum.conditional_formatting.add(highest_id_range, FormulaRule(
+                formula=[f"=AND(${highest_id_col}2>=99.0, ${id_type_col}2<{id_thresh})"], 
+                fill=colors["yellow"]
+            ))
+
+    # 6. Color coding evolutionary events (indels and subst) and MNVs
     col_map = {cell.value: cell.column_letter for cell in ws_sum[1]}
     sub_col = col_map.get("Subst events")
     ind_col = col_map.get("Indel events")
     mnv_col = col_map.get("MNV positions")
 
     last_row = len(df_summary) + 1
+    if sub_col:
+        sub_range = f"{sub_col}2:{sub_col}{last_row}"
+        # >= 6 (Roxo)
+        ws_sum.conditional_formatting.add(sub_range, CellIsRule(operator='greaterThanOrEqual', formula=['6'], fill=colors["event_purple"]))
+        # Entre 4 e 5 (Azul)
+        ws_sum.conditional_formatting.add(sub_range, CellIsRule(operator='between', formula=['4', '5'], fill=colors["event_blue"]))
 
-    if sub_col and ind_col:
-        range_to_format = f"{sub_col}2:{ind_col}{last_row}"
-        # REGRA 1: Soma >= 6 (Roxo)
-        ws_sum.conditional_formatting.add(range_to_format, 
-            FormulaRule(formula=[f"=(${sub_col}2+${ind_col}2)>=6"], fill=colors["event_purple"]))
-        # REGRA 2: Soma entre 4 e 5 (Azul)
-        ws_sum.conditional_formatting.add(range_to_format, 
-            FormulaRule(formula=[f"=AND((${sub_col}2+${ind_col}2)>=4, (${sub_col}2+${ind_col}2)<=5)"], fill=colors["event_blue"]))
+    if ind_col:
+        ind_range = f"{ind_col}2:{ind_col}{last_row}"
+        # Qualquer Indel > 0 (Roxo, indicando mutação estrutural relevante)
+        ws_sum.conditional_formatting.add(ind_range, CellIsRule(operator='greaterThan', formula=['0'], fill=colors["event_purple"]))
     
     if mnv_col:
         mnv_range = f"{mnv_col}2:{mnv_col}{last_row}"
@@ -486,7 +540,9 @@ def apply_workbook_styling(writer: pd.ExcelWriter, df_summary: pd.DataFrame, df_
         ws_qc.conditional_formatting.add(qc_range, CellIsRule(operator='lessThanOrEqual', formula=[str(good_cons_score * 0.8)], fill=colors["red"]))
 
 
-def export_to_excel(df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame, output_file: str, max_excel_hits: int, good_cons_score: int, max_ambig: int):
+def export_to_excel(df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.DataFrame, 
+                    output_file: str, max_excel_hits: int, good_cons_score: int, 
+                    max_ambig: int, min_len: int, min_cov: float, id_thresh: float):
     """
     Orchestrates the export of DataFrames to Excel sheets, 
     applies visual filters (Top X hits), and triggers formatting.
@@ -521,8 +577,8 @@ def export_to_excel(df_summary: pd.DataFrame, df_blast: pd.DataFrame, df_qc: pd.
         auto_adjust_columns(writer, "Quality_Control")
 
         # Apply conditional formatting based on the already filtered df_blast
-        apply_workbook_styling(writer, df_summary, df_blast_export, df_qc_export, good_cons_score, max_ambig)
-
+        apply_workbook_styling(writer, df_summary, df_blast_export, df_qc_export, 
+                               good_cons_score, max_ambig, min_len, min_cov, id_thresh)
 #
 # MAIN LOGIC
 #
@@ -553,8 +609,8 @@ def main():
                                   max_ambig)
     
     # --- 3. PRESENTATION / EXPORTING ---
-    export_to_excel(df_summary, df_blast_completo, df_qc, snakemake.output.report, max_excel_hits, good_consensus_score, max_ambig)
-
+    export_to_excel(df_summary, df_blast_completo, df_qc, snakemake.output.report, 
+                    max_excel_hits, good_consensus_score, max_ambig, min_len, min_cov, id_thresh)
 
 
 if __name__ == "__main__":
