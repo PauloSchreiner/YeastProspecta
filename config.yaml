@@ -19,3 +19,7 @@ parameters:
   min_consensus_len: 450     # Mininum length of consensus sequence. Below this, Status will change to a warning
   min_coverage: 90.0         # Mininum coverage between query and top hit with type. Below this, Status will change to a warning
   max_ambiguous_bases: 5     # # Maximum allowed 'N' or IUPAC ambiguous codes before warning
+
+sample_grouping:
+  remove_tokens_for_consensus:
+    - "phu"

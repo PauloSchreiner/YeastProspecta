@@ -99,23 +99,12 @@ parameters:
 
 *Keep in mind that the `good_consensus_score` value is totally arbitrary and may vary depending on sequence length. It refers to the consensus score reported by **EMBOSS merger**, and is used only for quality control.*
 
-### NCBI API Key (Crucial for BLAST)
-If you plan to run multiple BLAST jobs simultaneously, an **NCBI API Key** is required to prevent connection timeouts or temporary IP bans.
-
-1. Generate an API Key at your NCBI Account settings.
-2. Export it to your environment **before running the pipeline**:
-```bash
-export NCBI_KEY="your_api_key_here"
-```
 
 ---
 
 ## <a id="running-the-pipeline"></a>🚀 Running the Pipeline
 
-Once your data is in the `inputs` folder and you have configured the parameters, you can choose between two ways of running the pipeline:
-
-**1. Standard Run (No NCBI API Key, slower)**
-If you do not have an NCBI API key, you must limit the pipeline to 1 connection to the NCBI server at a time. The command below allows Snakemake to use multiple CPU cores for trimming and consensus, but forces the BLAST step to run sequentially:
+Once your data is in the `inputs` folder and you have configured the parameters, you can run the pipeline with:
 
 ```bash
 snakemake --cores all --resources ncbi_connection=1
@@ -123,19 +112,6 @@ snakemake --cores all --resources ncbi_connection=1
 
 You can alter the number of cores by changing `all` to any number.
 
-**2. Accelerated Run (NCBI API Key Required)**
-If you have an NCBI API key, you can speed up the pipeline by allowing multiple parallel BLAST requests. (Instructions for obtaining an API key can be found in [Configuration & Parameters](#configuration-parameters).)
-
-First, export your key to your environment:
-```bash
-export NCBI_KEY="your_api_key_here"
-```
-Then, run the pipeline increasing the `ncbi_connection` resource (e.g., to 4 simultaneous connections):
-```bash
-snakemake --cores all --resources ncbi_connection=4
-```
-
-(Tip: To perform a dry-run and see which steps will be executed without actually running them, add the `-n` flag to any of the commands above).
 
 ---
 

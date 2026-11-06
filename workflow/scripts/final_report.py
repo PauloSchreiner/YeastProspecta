@@ -74,31 +74,53 @@ def extract_ambiguity_data(fasta_path_list: list) -> pd.DataFrame:
     return df
 
 
-def extract_trim_data(trim_path: str) -> pd.DataFrame:
+def extract_trim_data(trim_path: str, remove_tokens=None) -> pd.DataFrame:
     """
-    Reads the trimming CSV, pivots Forward (F) and Reverse (R) reads into separate columns, 
-    and returns a DataFrame indexed by sample.
+    Reads the trimming report, groups technical replicates by sample,
+    calculates mean trimmed length for F and R, and returns a DataFrame
+    indexed by canonical sample.
     """
-    # 1. Read the entire file at once (sep='\t' indicates it's Tab-separated)
-    df = pd.read_csv(trim_path, sep="\t")
-    
-    # 2. Split the 'sample' column (e.g., "1_F") into two new columns: ID and Direction.
-    # expand=True creates actual DataFrame columns.
-    df[['Sample_ID', 'Direction']] = df['sample'].str.rsplit('_', n=1, expand=True)
-    
-    # 3. Standardize sample names using zfill(3) (e.g., "1" becomes "001") so we can join tables later.
-    df['Sample_ID'] = df['Sample_ID'].astype(str).str.zfill(3)
-    
-    # 4. Pivot the table so 'F' and 'R' directions become their own columns
-    df_pivot = df.pivot(index='Sample_ID', columns='Direction', values='post_trim_length')
-    
-    # 5. Rename columns to our desired standard
-    df_pivot.rename(columns={'F': 'F_len', 'R': 'R_len'}, inplace=True)
-    
-    # Clean up the column axis name for aesthetics and return
-    df_pivot.columns.name = None 
-    return df_pivot
 
+    if remove_tokens is None:
+        remove_tokens = []
+
+    remove_tokens = set(remove_tokens)
+
+    df = pd.read_csv(trim_path, sep="\t")
+
+    # Split sample name and sequencing direction
+    df[['Sample_ID', 'Direction']] = df['sample'].str.rsplit(
+        '_', n=1, expand=True
+    )
+
+    # Remove configured technical replicate tokens
+    df['Sample_ID'] = df['Sample_ID'].apply(
+        lambda sample: "_".join(
+            token for token in str(sample).split("_")
+            if token not in remove_tokens
+        )
+    )
+
+    # Standardize sample names
+    df['Sample_ID'] = df['Sample_ID'].astype(str).str.zfill(3)
+
+    # Average read length across technical replicates
+    df_pivot = df.pivot_table(
+        index='Sample_ID',
+        columns='Direction',
+        values='post_trim_length',
+        aggfunc='mean'
+    ).round()
+
+    # Rename columns
+    df_pivot.rename(
+        columns={'F': 'F_len', 'R': 'R_len'},
+        inplace=True
+    )
+
+    df_pivot.columns.name = None
+
+    return df_pivot
 
 def extract_consensus_data(consensus_path: str) -> pd.DataFrame:
     """
@@ -593,7 +615,10 @@ def main():
     max_ambig = int(snakemake.params.max_ambiguous_bases)
 
     # --- 1. EXTRACTION ---
-    df_trim = extract_trim_data(snakemake.input.trim_summary)
+    df_trim = extract_trim_data(
+        snakemake.input.trim_summary,
+        snakemake.params.remove_tokens_for_consensus
+    )
     df_cons = extract_consensus_data(snakemake.input.consensus_summary)
     df_ambig = extract_ambiguity_data(snakemake.input.fastas) 
     df_blast_completo = parse_blast_xmls(snakemake.input.xmls)

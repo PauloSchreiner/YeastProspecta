@@ -18,9 +18,34 @@ TRIM_CUTOFF = config["parameters"]["trim_cutoff"]
 
 files = glob_wildcards(os.path.join(INPUT_DIR, "{sample}_{primer}.ab1"))
 samples, primers = files.sample, files.primer
-unique_samples = list(set(samples)) # Necessary for the consensus rule
 
-NCBI_API_KEY = os.environ.get("NCBI_KEY", "") # Checks for exported variable NCBI_KEY, defaults to blank
+# Tokens that identify technical replicates
+GROUPING_TOKENS = set(
+    config.get("sample_grouping", {}).get("remove_tokens_for_consensus", [])
+)
+
+def canonical_sample(raw_sample):
+    return "_".join(
+        token for token in raw_sample.split("_")
+        if token not in GROUPING_TOKENS
+    )
+
+# Group original sample names by their canonical name
+sample_groups = {}
+
+for raw_sample in sorted(set(samples)):
+    canonical = canonical_sample(raw_sample)
+    sample_groups.setdefault(canonical, []).append(raw_sample)
+
+# Current implementation supports one or two original sample names per group
+for canonical, sources in sample_groups.items():
+    if len(sources) > 2:
+        raise ValueError(
+            f"{canonical}: found {len(sources)} grouped sample names. "
+            "This implementation supports at most two."
+        )
+
+unique_samples = sorted(sample_groups)
 
 
 rule all:
@@ -57,20 +82,75 @@ rule trim_aggregate:
         final_df.to_csv(output.summary, sep='\t', index=False)
 
 
+rule merge_direction_replicates:
+    input:
+        first = lambda wc: os.path.join(
+            TRIM_DIR,
+            f"{sample_groups[wc.sample][0]}_{wc.primer}_trimmed.fastq"
+        ),
+        second = lambda wc: os.path.join(
+            TRIM_DIR,
+            f"{sample_groups[wc.sample][1]}_{wc.primer}_trimmed.fastq"
+        )
+    output:
+        fasta = os.path.join(
+            CONSENSUS_DIR,
+            "{sample}_{primer}_replicate_consensus.fasta"
+        ),
+        report = os.path.join(
+            CONSENSUS_REPORT_DIR,
+            "{sample}_{primer}_replicate_report.txt"
+        )
+    wildcard_constraints:
+        primer = "F|R"
+    shell:
+        """
+        merger \
+            -asequence {input.first} \
+            -bsequence {input.second} \
+            -outseq {output.fasta} \
+            -outfile {output.report}
+        """
+
+
+def consensus_direction_input(wildcards, primer):
+    sources = sample_groups[wildcards.sample]
+
+    # Sample without technical replicates
+    if len(sources) == 1:
+        return os.path.join(
+            TRIM_DIR,
+            f"{sources[0]}_{primer}_trimmed.fastq"
+        )
+
+    # Sample with technical replicates
+    elif len(sources) == 2:
+        return os.path.join(
+            CONSENSUS_DIR,
+            f"{wildcards.sample}_{primer}_replicate_consensus.fasta"
+        )
+
+    else:
+        raise ValueError(
+            f"Unexpected number of source samples for {wildcards.sample}"
+        )
+
+
 rule consensus:
     input:
-        F_read = os.path.join(TRIM_DIR, "{sample}_F_trimmed.fastq"),
-        R_read = os.path.join(TRIM_DIR, "{sample}_R_trimmed.fastq")
+        F_read = lambda wc: consensus_direction_input(wc, "F"),
+        R_read = lambda wc: consensus_direction_input(wc, "R")
     output:
         fasta = os.path.join(CONSENSUS_DIR, "{sample}_consensus.fasta"),
         report = os.path.join(CONSENSUS_REPORT_DIR, "{sample}_consensus_report.txt")
     shell:
         """
-        merger -asequence {input.F_read} \
-        -bsequence {input.R_read} \
-        -sreverse2 \
-        -outseq {output.fasta} \
-        -outfile {output.report}
+        merger \
+            -asequence {input.F_read} \
+            -bsequence {input.R_read} \
+            -sreverse2 \
+            -outseq {output.fasta} \
+            -outfile {output.report}
         """
 
 
@@ -96,8 +176,6 @@ rule blast:
         ncbi_connection = 1
     shell:
         """
-        export NCBI_API_KEY={NCBI_API_KEY}
-        
         blastn \
         -db {params.blast_db} \
         -remote \
@@ -120,7 +198,8 @@ rule final_report:
         max_excel_hits = config["parameters"]["max_excel_hits"],
         min_consensus_len = config["parameters"]["min_consensus_len"],
         min_coverage = config["parameters"]["min_coverage"],
-        max_ambiguous_bases = config["parameters"]["max_ambiguous_bases"]
+        max_ambiguous_bases = config["parameters"]["max_ambiguous_bases"],
+        remove_tokens_for_consensus = config.get("sample_grouping", {}).get("remove_tokens_for_consensus", [])
     script:
         "scripts/final_report.py"
 

@@ -4,8 +4,12 @@ results/
 logs/
 resources/
 
+# personal information
+keys/
+
 # system files
 .DS_Store
 __pycache__/
 .snakemake/
 .ipynb_checkpoints/
+
